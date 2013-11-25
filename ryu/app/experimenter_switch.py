@@ -30,7 +30,8 @@ class Hello(app_manager.RyuApp):
 			HelloAction()
 			]
     inst = [ parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions) ]
-    match = parser.OFPMatch()
+    #match = parser.OFPMatch(ns_pdu=int('0x00', 16))
+    match = OFPExperimenterMatch()
     req = parser.OFPFlowMod(datapath=dp, priority=1, match=match, instructions=inst)
     dp.send_msg(req)
 
@@ -46,3 +47,16 @@ class HelloAction(ofproto_v1_3_parser.OFPActionExperimenter):
     self.len = int("0x10", 16)
     ofproto_parser.msg_pack_into(self.exp_struct, buf, offset, self.type ,self.len, self.experimenter, self.subtype)
 
+class OFPExperimenterMatch(ofproto_v1_3_parser.OFPMatch):
+  def __init__(self):
+    super(ofproto_v1_3_parser.OFPMatch, self).__init__()
+    self.experimenter = int("0x42", 16)
+    self.OFPXMC = int("0xffff", 16)
+    self.OFPMT = int("0x01", 16)
+    self.struct = "!HHIIHH"
+    self.len =int("0x10", 16)
+    self.expMatch = int("0x01", 16)
+    self.value = 0
+  def serialize(self, buf, offset):
+   ofproto_parser.msg_pack_into(self.struct, buf, offset, self.OFPMT, self.len, self.OFPXMC, self.experimenter, self.expMatch, self.value)
+   return self.len
