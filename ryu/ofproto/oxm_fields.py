@@ -86,7 +86,7 @@ class UnknownType(TypeDescr):
     from_user = staticmethod(base64.b64decode)
 
 
-OFPXMC_OPENFLOW_GPRS = 0xBABE
+OFPXMC_OPENFLOW_GPRS = 0x7FFF
 
 class OpenFlowGPRS(object):
     _class = OFPXMC_OPENFLOW_GPRS
