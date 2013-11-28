@@ -43,7 +43,7 @@ class HelloAction(ofproto_v1_3_parser.OFPActionExperimenter):
     super(ofproto_v1_3_parser.OFPActionExperimenter, self).__init__()
     self.experimenter = int("0x42", 16)
     self.subtype = int("0x0100", 16)
-    self.exp_struct = "!HHIHxxxxxxx"
+    self.exp_struct = "!HHIHxxxxxx"
   
   def serialize(self, buf, offset):
     self.type = int("0xffff", 16)
