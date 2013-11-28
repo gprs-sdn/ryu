@@ -10,6 +10,8 @@ from ryu.ofproto import ofproto_parser
 import struct
 import sys
 
+match = 0
+
 class Hello(app_manager.RyuApp):
   def __init__(self, *args, **kwargs):
     super(Hello, self).__init__(*args, **kwargs)
@@ -19,6 +21,7 @@ class Hello(app_manager.RyuApp):
     dp = ev.msg.datapath
     ofp = dp.ofproto
     parser = dp.ofproto_parser
+    global match
 
     # zmazme zo switchu vsetky pravidla
     req = parser.OFPFlowMod(datapath=dp, command=ofp.OFPFC_DELETE)
@@ -30,7 +33,7 @@ class Hello(app_manager.RyuApp):
 			HelloAction()
 			]
     inst = [ parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions) ]
-    #match = parser.OFPMatch(ns_pdu=int('0x00', 16))
+    #match = parser.OFPMatch(eth_type=0x800,ip_proto=0x11, udp_dst=23000)
     match = OFPExperimenterMatch()
     req = parser.OFPFlowMod(datapath=dp, priority=1, match=match, instructions=inst)
     dp.send_msg(req)
@@ -40,7 +43,7 @@ class HelloAction(ofproto_v1_3_parser.OFPActionExperimenter):
     super(ofproto_v1_3_parser.OFPActionExperimenter, self).__init__()
     self.experimenter = int("0x42", 16)
     self.subtype = int("0x0100", 16)
-    self.exp_struct = "!HHIHxxxxxx"
+    self.exp_struct = "!HHIHxxxxxxx"
   
   def serialize(self, buf, offset):
     self.type = int("0xffff", 16)
@@ -50,13 +53,18 @@ class HelloAction(ofproto_v1_3_parser.OFPActionExperimenter):
 class OFPExperimenterMatch(ofproto_v1_3_parser.OFPMatch):
   def __init__(self):
     super(ofproto_v1_3_parser.OFPMatch, self).__init__()
+    global match
     self.experimenter = int("0x42", 16)
-    self.OFPXMC = int("0xffff", 16)
+    self.len =int("0x10", 16)
+    self.OFPXMC = int("0xbabe", 16)
     self.OFPMT = int("0x01", 16)
     self.struct = "!HHIIHH"
-    self.len =int("0x10", 16)
     self.expMatch = int("0x01", 16)
     self.value = 0
+    self.match = int(match)
+    print(self.match)    
+    
   def serialize(self, buf, offset):
-   ofproto_parser.msg_pack_into(self.struct, buf, offset, self.OFPMT, self.len, self.OFPXMC, self.experimenter, self.expMatch, self.value)
-   return self.len
+  # ofproto_parser.msg_pack_into(self.struct, buf, offset, self.OFPMT, self.len, self.OFPXMC, self.experimenter, self.expMatch, self.value)
+    ofproto_parser.msg_pack_into(self.struct, buf, offset, self.OFPMT, self.len, self.OFPXMC, self.experimenter, self.expMatch, self.value)   
+    return self.len
