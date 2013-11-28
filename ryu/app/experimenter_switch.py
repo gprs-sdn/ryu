@@ -7,6 +7,7 @@ from ryu.ofproto import ofproto_v1_3
 from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
 from ryu.ofproto import ofproto_parser
+from ryu.ofproto import inet
 import struct
 import sys
 
@@ -33,8 +34,7 @@ class Hello(app_manager.RyuApp):
 			HelloAction()
 			]
     inst = [ parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions) ]
-    #match = parser.OFPMatch(eth_type=0x800,ip_proto=0x11, udp_dst=23000)
-    match = OFPExperimenterMatch()
+    match = parser.OFPMatch(eth_type=0x0800,ip_proto=inet.IPPROTO_UDP, udp_dst=23000, ns_type=0)
     req = parser.OFPFlowMod(datapath=dp, priority=1, match=match, instructions=inst)
     dp.send_msg(req)
 
@@ -50,21 +50,3 @@ class HelloAction(ofproto_v1_3_parser.OFPActionExperimenter):
     self.len = int("0x10", 16)
     ofproto_parser.msg_pack_into(self.exp_struct, buf, offset, self.type ,self.len, self.experimenter, self.subtype)
 
-class OFPExperimenterMatch(ofproto_v1_3_parser.OFPMatch):
-  def __init__(self):
-    super(ofproto_v1_3_parser.OFPMatch, self).__init__()
-    global match
-    self.experimenter = int("0x42", 16)
-    self.len =int("0x10", 16)
-    self.OFPXMC = int("0xbabe", 16)
-    self.OFPMT = int("0x01", 16)
-    self.struct = "!HHIIHH"
-    self.expMatch = int("0x01", 16)
-    self.value = 0
-    self.match = int(match)
-    print(self.match)    
-    
-  def serialize(self, buf, offset):
-  # ofproto_parser.msg_pack_into(self.struct, buf, offset, self.OFPMT, self.len, self.OFPXMC, self.experimenter, self.expMatch, self.value)
-    ofproto_parser.msg_pack_into(self.struct, buf, offset, self.OFPMT, self.len, self.OFPXMC, self.experimenter, self.expMatch, self.value)   
-    return self.len

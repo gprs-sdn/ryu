@@ -577,6 +577,7 @@ class Flow(object):
         self.pbb_isid = 0
         self.tunnel_id = 0
         self.ipv6_exthdr = 0
+        self.ns_type = 0
 
 
 class FlowWildcards(object):
@@ -1235,6 +1236,12 @@ class OFPMatch(StringifyMixin):
     def set_udp_src(self, udp_src):
         self._wc.ft_set(ofproto_v1_3.OFPXMT_OFB_UDP_SRC)
         self._flow.udp_src = udp_src
+
+# FIXME:
+#    def set_ns_type(self, ns_type):
+#        self._wc.ft_set(ofproto_v1_3.OFPXMT_GPRS_NS_TYPE)
+#        self._flow.ns_type = ns_type
+#
 
     def set_udp_dst(self, udp_dst):
         self._wc.ft_set(ofproto_v1_3.OFPXMT_OFB_UDP_DST)
