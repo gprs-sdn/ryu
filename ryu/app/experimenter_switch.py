@@ -9,9 +9,7 @@ from ryu.lib.packet import ethernet
 from ryu.ofproto import ofproto_parser
 from ryu.ofproto import inet
 import struct
-import sys
-
-match = 0
+import sys 
 
 class Hello(app_manager.RyuApp):
   def __init__(self, *args, **kwargs):
@@ -31,18 +29,20 @@ class Hello(app_manager.RyuApp):
 	# urobme hello a posleme vsade
     actions = [ 
 			parser.OFPActionOutput(ofp.OFPP_FLOOD, 0),
-			HelloAction()
+			GPRSAction('hello')
 			]
     inst = [ parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions) ]
-    match = parser.OFPMatch(eth_type=0x0800,ip_proto=inet.IPPROTO_UDP, udp_dst=23000, ns_type=0)
+   # match = parser.OFPMatch(eth_type=0x0800,ip_proto=inet.IPPROTO_UDP, udp_dst=23000, ns_type=0)
+    match  = parser.OFPMatch()
     req = parser.OFPFlowMod(datapath=dp, priority=1, match=match, instructions=inst)
     dp.send_msg(req)
 
-class HelloAction(ofproto_v1_3_parser.OFPActionExperimenter):
-  def __init__(self):
+class GPRSAction(ofproto_v1_3_parser.OFPActionExperimenter):
+  gprs_subtype = {'pushGPRSNS': '0x1', 'popGPRSNS': '0x2', 'pushIP': '0x3' , 'popIP': '0x4', 'pushUDP': '0x5', 'popUDP': '0x6', 'hello': '0x0100'}
+  def __init__(self, action):
     super(ofproto_v1_3_parser.OFPActionExperimenter, self).__init__()
     self.experimenter = int("0x42", 16)
-    self.subtype = int("0x0100", 16)
+    self.subtype = int(self.gprs_subtype[action], 16)
     self.exp_struct = "!HHIHxxxxxx"
   
   def serialize(self, buf, offset):
