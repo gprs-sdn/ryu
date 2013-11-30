@@ -32,8 +32,7 @@ class Hello(app_manager.RyuApp):
 			GPRSAction('hello')
 			]
     inst = [ parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions) ]
-   # match = parser.OFPMatch(eth_type=0x0800,ip_proto=inet.IPPROTO_UDP, udp_dst=23000, ns_type=0)
-    match  = parser.OFPMatch()
+    match = parser.OFPMatch(eth_type=0x0800,ip_proto=inet.IPPROTO_UDP, udp_dst=23000, ns_type=0, ns_bvci=2, bssgp_tlli=0xc5a4aeea, llc_sapi=3, sndcp_nsapi=5)
     req = parser.OFPFlowMod(datapath=dp, priority=1, match=match, instructions=inst)
     dp.send_msg(req)
 

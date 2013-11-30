@@ -578,6 +578,13 @@ class Flow(object):
         self.tunnel_id = 0
         self.ipv6_exthdr = 0
         self.ns_type = 0
+        self.ns_bvci = 0
+        self.bssgp_tlli = 0
+        self.llc_sapi = 0
+        self.sndcp_nsapi = 0
+        self.sndcp_first_segment = 0
+        self.sndcp_more_segments = 0
+        self.sndcp_comp = 0
 
 
 class FlowWildcards(object):
@@ -707,9 +714,33 @@ class OFPMatch(StringifyMixin):
                       in kwargs.iteritems()]
             # assumption: sorting by OXM type values makes fields
             # meet ordering requirements (eg. eth_type before ipv4_src)
-            fields.sort()
+            #FIXME: 
+            fields = sorted(fields, cmp=self.oxm_sort_cmp)
             self._fields2 = [ofproto_v1_3.oxm_to_user(n, v, m) for (n, v, m)
                              in fields]
+
+    def oxm_sort_cmp(self, oxm1, oxm2):
+        (n1, v1, m1) = oxm1
+        (n2, v2, m2) = oxm2
+        c1 = n1 & 0xffff00
+        c2 = n2 & 0xffff00
+        f1 = n1 & 0x0000ff
+        f2 = n2 & 0x0000ff
+
+        # order by OXM_CLASS descending
+        if c1 < c2:
+            return 1
+        elif c1 > c2:
+            return -1
+
+        # order by field (within class) ascending
+        if f1 < f2:
+            return -1
+        elif f1 > f2:
+            return 1
+
+        # same
+        return 0
 
     def __getitem__(self, key):
         return dict(self._fields2)[key]

@@ -1058,6 +1058,13 @@ oxm_types = [
     oxm_fields.OpenFlowBasic('tunnel_id', 38, oxm_fields.Int8),
     oxm_fields.OpenFlowBasic('ipv6_exthdr', 39, oxm_fields.Int2),
     oxm_fields.OpenFlowGPRS('ns_type', 1, oxm_fields.Int1),
+    oxm_fields.OpenFlowGPRS('ns_bvci', 2, oxm_fields.Int2),
+    oxm_fields.OpenFlowGPRS('bssgp_tlli', 3, oxm_fields.Int4),
+    oxm_fields.OpenFlowGPRS('llc_sapi', 4, oxm_fields.Int1),
+    oxm_fields.OpenFlowGPRS('sndcp_nsapi', 5, oxm_fields.Int1),
+    oxm_fields.OpenFlowGPRS('sndcp_first_segment', 6, oxm_fields.Int1),
+    oxm_fields.OpenFlowGPRS('sndcp_more_segments', 7, oxm_fields.Int1),
+    oxm_fields.OpenFlowGPRS('sndcp_comp', 8, oxm_fields.Int1),
 ]
 
 oxm_fields.generate(__name__)
