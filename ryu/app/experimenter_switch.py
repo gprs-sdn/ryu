@@ -64,7 +64,7 @@ class GPRSControll(app_manager.RyuApp):
                         sndcp_nsapi=pdp.nsapi)
         actions = [ parser.OFPActionOutput(port=tunnel) ]
         inst = [ parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions) ]
-        req = parser.OFPFlowMod(datapath=dp, table_id=OF_GPRS_TABLE, priority=100, match=match, instructions=inst);
+        req = parser.OFPFlowMod(datapath=dp, table_id=OF_GPRS_TABLE, priority=10, match=match, instructions=inst);
         dp.send_msg(req)
 
     def on_inner_dp_join(self, dp):
@@ -98,14 +98,14 @@ class GPRSControll(app_manager.RyuApp):
         match = parser.OFPMatch( sndcp_first_segment=0 )
         actions = [ ] 
         inst = [ parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions) ]
-        req = parser.OFPFlowMod(datapath=dp, table_id=OF_GPRS_TABLE, priority=0, match=match, instructions=inst)
+        req = parser.OFPFlowMod(datapath=dp, table_id=OF_GPRS_TABLE, priority=20, match=match, instructions=inst)
         dp.send_msg(req)
         
         # ak je to prvy SNDCP fragment packetu s viac ako jednym fragmentom, ICMP a DROP
         match = parser.OFPMatch( sndcp_first_segment=1, sndcp_more_segments=1 )
         actions = [ GPRSActionHello() ]
         inst = [ parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions) ]
-        req = parser.OFPFlowMod(datapath=dp, table_id=OF_GPRS_TABLE, priority=0, match=match, instructions=inst)
+        req = parser.OFPFlowMod(datapath=dp, table_id=OF_GPRS_TABLE, priority=20, match=match, instructions=inst)
         dp.send_msg(req)
 
         # konkretne user packety posunieme, kam ich treba
