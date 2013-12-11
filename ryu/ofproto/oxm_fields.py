@@ -92,7 +92,7 @@ OFPXMC_OPENFLOW_GPRS = 0x7FFF
 class OpenFlowBasic(object):
     #_class = OFPXMC_OPENFLOW_BASIC
 
-    def __init__(self, name, num, type_, _class):
+    def __init__(self, name, num, type_, _class = OFPXMC_OPENFLOW_BASIC):
         self._class = _class
         self.name = name
         self.num = num | (self._class << 7)
