@@ -62,7 +62,7 @@ class GPRSControll(app_manager.RyuApp):
                         bssgp_tlli=pdp.tlli,
                         llc_sapi=pdp.sapi,
                         sndcp_nsapi=pdp.nsapi)
-        actions = [ parser.OFPActionOutput(port=tunnel) ]
+        actions = [ GPRSActionPopGPRSNS(), GPRSActionPopUDP(), GPRSActionPopIP(), parser.OFPActionOutput(port=tunnel) ]
         inst = [ parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions) ]
         req = parser.OFPFlowMod(datapath=dp, table_id=OF_GPRS_TABLE, priority=10, match=match, instructions=inst);
         dp.send_msg(req)
@@ -113,6 +113,13 @@ class GPRSControll(app_manager.RyuApp):
         #TODO: pridat vsetky aktivne PDP kontexty
         for pdp in self.active_contexts:
             self.add_pdp_context(dp, pdp, TUNNEL_PORT)
+
+        # ak to ma sndcp, su to user data neznameho PDP kontextu - drop
+        match = parser.OFPMatch( sndcp_first_segment=1 )
+        actions = [ ]
+        inst = [ parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions) ]
+        req = parser.OFPFlowMod(datapath=dp, table_id=OF_GPRS_TABLE, priority=1, match=match, instructions=inst)
+        dp.send_msg(req)
 
         # vsetko ostatne je signalizacia - tlacime do vGSN
         actions = [ parser.OFPActionOutput(VGSN_PORT) ]
