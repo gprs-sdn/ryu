@@ -1,0 +1,20 @@
+tak ako je, funguje na topologii:
+
+ip link add red0 type veth peer name red1
+ip link add blue0 type veth peer name blue1
+ip link add black0 type veth peer name black1
+ip link add black2 type veth peer name black3
+ip link add black4 type veth peer name black5
+
+ip netns add host0
+ip netns add host1
+
+ip link set red0 netns host0
+ip link set blue0 netns host1
+
+ip netns exec host0 ifconfig red0 172.16.0.1/24 up
+ip netns exec host1 ifconfig blue0 172.16.0.2/24 up
+
+ofdatapath -i red1,black0,black2 -d 000000000001 punix:/tmp/sw1.socket -v
+ofdatapath -i blue1,black1,black5 -d 000000000002 punix:/tmp/sw2.socket -v
+ofdatapath -i black3,black4 -d 000000000003 punix:/tmp/sw3.socket -v
