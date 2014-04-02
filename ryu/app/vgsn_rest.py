@@ -14,8 +14,11 @@
 # limitations under the License.
 
 import logging
+#Dpendencia! networkx musi byt nainstalovany!
+#sudo pip install networkx
 import networkx as nx
 import json
+import random
 from webob import Response
 
 from ryu.base import app_manager
@@ -25,7 +28,7 @@ from ryu.controller.handler import MAIN_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
 from ryu.ofproto import ofproto_v1_3_parser
-from ryu.lib import ofctl_v1_3
+#from ryu.lib import ofctl_v1_3
 from ryu.app.wsgi import ControllerBase, WSGIApplication
 
 
@@ -34,28 +37,24 @@ LOG = logging.getLogger('ryu.app.ofctl_rest')
 # REST API for "mac tunnels"
 #
 # Test REST API
-# GET /gprs_sdn/info/{opt}
+# GET /gprs/info/{opt}
 # test output on controller console
 #
-# modify tunnel
-# POST /gprs_sdn/tunnels/{cmd}
+# modify pdp context
+# POST /gprs/pdp/{cmd}
 #
 # accepted cmd arguments are 'add' 'mod' 'del'
 # parameters needed for tunnel creation are inserted into body of the request
 #
 # Example body:
 #
-#{'TID' : '42:42:42:42:42:42', 'start' : '0', 'end' : '4', 'condition' : { 'eth_type' : 0x0800, 'ipv4_src' : '172.16.0.1', 'ipv4_dst' : '172.16.0.2'}, 'mirror' : 'yes', 'mirror_TID' : '42:42:42:42:42:43'}
+#{'start' : '0', 'end' : '4', 'condition' : { 'eth_type' : 0x0800, 'ipv4_src' : '172.16.0.1', 'ipv4_dst' : '172.16.0.2'}, 'mirror' : 'yes'}
 #
-# TID = Tunnel identifier also used to substitute MAC address on packets that enter tunnel 
 # start = datapath ID of first forwarder in tunnel
 # end = datapath ID of last forwarder in tunnel
 # condition = dictionary of supported match rules
 #     supperted match fields = eth_type, ipv4_src, ipv4_dst, eth_src, eth_dst
 # mirror = if yes then tunnel will be created in backward dirrection too
-# mirror_TID = if mirror is needed backward tunnel must have its own TID
-#
-#
 
 
 class node:
@@ -123,37 +122,33 @@ class StatsController(ControllerBase):
         self.dpset = data['dpset']
         self.waiters = data['waiters']
         self.topo = topology()
+        self.id_pool = []
 
     def info(self, req, opt):
         resp = str(opt)
         LOG.debug('~~~~~~~~~~~~~~~~~~~~~~~~~debug~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~')
         return (Response(content_type='text', body=resp))
 
-    def mod_tunnel (self, req, cmd, mirror = 0):
+    def mod_pdp (self, req, cmd, mirror = 0):
         #vytiahneme parametre z tela REST spravy
         body = eval(req.body)
-        TID = str(body.get('TID'))
+        #TID = str(body.get('TID'))
         start = int(body.get('start'))
         end = int(body.get('end'))
         condition = body.get('condition')
         two_way = body.get('mirror')
-        mirror_TID = body.get('mirror_TID')
+        #mirror_TID = body.get('mirror_TID')
+        TID = self.get_mac()
+        mirror_TID = self.get_mac()
         #vytvorime si instanciu triedy topology ktora ma graf siete
         #TODO: zvazit ci tuto instanciu radsej nevytvarat v __init__() triedy aby bola spolocna a nevytvarala sa nova pri kazdom volani mod_tunnel()
         topo = self.topo
         # do 't' dostaneme tunnel triedy 'tunnels' (na zaciatku)
         # v pripade ze mirror==1 (volanie mod_tunnel() pre vytvorenie tunela v opacnom smere) dostaneme spiatocny tunel 
-        LOG.debug(mirror)
         if mirror == 0:
             t = topo.get_tunnel(start, end, TID, condition)
-            for var in t.nodes:
-                LOG.debug(var.dpid)
-                LOG.debug(t.TID)
         else:
             t = topo.get_tunnel(end, start, mirror_TID, condition)
-            for var in t.nodes:
-                LOG.debug(var.dpid)
-                LOG.debug(t.TID)
 
         # premennej cmd priradime OFP konstantu na zaklade adresy REST volania /stats/tunnels/{cmd} 
         # zatial sa nepouziva, vzdy sa robi add
@@ -196,7 +191,7 @@ class StatsController(ControllerBase):
         # kontrola na mirror == 0 zabezpecuje aby sa nerekurzovalo donekonecna lebo rekurzivne zavolana funkcia ma mirror == 1
         if two_way == 'yes' and mirror == 0:     
             LOG.debug('~~~~~~~~~~~~~~~~~~~~~~~~~~Debug~rekurs~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~')  
-            self.mod_tunnel(req, cmd, 1)  
+            self.mod_pdp(req, cmd, 1)  
         return (Response(content_type='text', body='ok'))
 
     def add_flow(self, dp, priority, match, actions):
@@ -207,6 +202,22 @@ class StatsController(ControllerBase):
         mod = parser.OFPFlowMod(datapath=dp, priority=priority, match=match, instructions=inst)
         dp.send_msg(mod)
 
+    
+    def get_mac(self):
+        mac_char='0123456789abcdef'
+        mac_addr=''
+        available=0
+        while available == 0:
+            for i in range(6):
+                for y in range(2):
+                    mac_addr = mac_addr + random.choice(mac_char)
+                mac_addr = mac_addr + ':'
+
+            mac_addr = mac_addr[:-1]
+            if mac_addr not in self.id_pool:
+                available = 1
+        self.id_pool.append(mac_addr)
+        return(mac_addr)
 
 
 class RestStatsApi(app_manager.RyuApp):
@@ -227,16 +238,16 @@ class RestStatsApi(app_manager.RyuApp):
         mapper = wsgi.mapper
 
         wsgi.registory['StatsController'] = self.data
-        path = '/gprs_sdn'
+        path = '/gprs'
 
         uri = path + '/info/{opt}'
         mapper.connect('stats',uri,
                        controller=StatsController, action='info',
                        conditions=dict(method=['GET']))
   
-        uri = path + '/tunnels/{cmd}'
+        uri = path + '/pdp/{cmd}'
         mapper.connect('stats',uri,
-                       controller=StatsController, action='mod_tunnel',
+                       controller=StatsController, action='mod_pdp',
 		       conditions=dict(method=['POST']))
 
     def stats_reply_handler(self, ev):
