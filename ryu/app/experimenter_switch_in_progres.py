@@ -19,6 +19,7 @@ import networkx as nx
 import json
 import random
 import socket
+import ast
 
 ################Uzly, tunely a topologia#################
 
@@ -180,7 +181,6 @@ class GPRSControll(app_manager.RyuApp):
         # dozvedat dynamicky cez REST
         # zatial, kazdy datapath ma vsetky kontexty
         #self.active_contexts.append( PDPContext(bvci=2, tlli=0xc5a4aeea, sapi=3, nsapi=5, tunnel_port=TUNNEL_PHY_PORT, tunnel_internet='00:00:00:00:00:01', tunnel_bss='00:00:00:00:00:02', ip='10.10.10.10') )
-
         self.dpset = kwargs['dpset']
         wsgi = kwargs['wsgi']
         self.waiters = {}
@@ -300,7 +300,7 @@ class RestCall(ControllerBase):
 
     def mod_pdp (self, rest_body, cmd, mirror = 0, TID=0, mirrorTID=0):
         #vytiahneme parametre z tela REST spravy
-        body = eval(rest_body.body)
+        body = ast.literal_eval(rest_body.body)
         start = int(body.get('start'), 16)
         end = int(body.get('end'), 16)
         bvci = int(body.get('bvci'))
