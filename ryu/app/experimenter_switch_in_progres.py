@@ -358,7 +358,7 @@ class RestCall(ControllerBase):
             dp = self.dpset.get(t.nodes[0].dpid)
             parser = dp.ofproto_parser
             ######################################Prvy paket na zaklade cielovej IP adresy (clientIP) natlacit do tunelu###################
-            match = parser.OFPMatch(eth_type=0x0800, ipv4_src=clientIP) 
+            match = parser.OFPMatch(eth_type=0x0800, ipv4_dst=clientIP) 
             actions = [parser.OFPActionSetField(eth_src=mirrorTID), parser.OFPActionSetField(eth_dst=TID),
                        parser.OFPActionOutput(t.nodes[0].port_out)]
             self.add_flow(dp, 9, match, actions, 0)
