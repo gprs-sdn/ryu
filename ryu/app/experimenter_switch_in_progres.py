@@ -89,28 +89,49 @@ class topology():
         self.add_link(0xc,2,3)
         self.reload_topology()
 
+    def vymaz_tunel(tunelID):
+        for hrana in ((u,v) for u,v,d in DynamicGraph.edges_iter(data=True) if tunelID in d['tunely']):
+            DynamicGraph[hrana[0]][hrana[1]]['tunely'] = []
+
     def add_forwarder(self, fwID):
-       self.StaticGraph.add_node(fwID)
+        self.StaticGraph.add_node(fwID)
 
     def add_link(self, fwID1, fwID2, ifnumm):
-       self.StaticGraph.add_edge(fwID1, fwID2, interf=ifnumm)
+        self.StaticGraph.add_edge(fwID1, fwID2, interf=ifnumm)
 
+    def link_down(fwID1, fwID2):
+        for tunelID in DynamicGraph[fwID1][fwID2]['tunely']:
+            vymaz_tunel(tunelID)
+    DynamicGraph.remove_edge(fwID1, fwID2)
+
+    def link_up(fwID1, fwID2):
+        DynamicGraph.edge[fwID1][fwID2] = StaticGraph[fwID1][fwID2]
+	
     def forwarder_down(self, fwID):
-       self.DynamicGraph.remove_edges_from(nx.edges(DynamicGraph, fwID))
+        tunelIDs = []
+        for v in DynamicGraph[fwID].keys():
+            tunelIDs += DynamicGraph[fwID][v]['tunely']
+        for tunelID in tunelIDs:
+            vymaz_tunel(tunelID)
+    DynamicGraph.remove_edges_from(nx.edges(DynamicGraph, fwID))
 
     def forwarder_up(self, fwID):
-       self.DynamicGraph.add_edges_from(StaticGraph.edges(fwID, data=True))
+        self.DynamicGraph.add_edges_from(StaticGraph.edges(fwID, data=True))
 
     def reload_topology(self):
-       self.DynamicGraph = self.StaticGraph.to_directed()
+        self.DynamicGraph = self.StaticGraph.to_directed()
 
     def get_tunnel(self, fwID1, fwID2, tunnelID, mirrorID):
-       hopy = nx.shortest_path(self.DynamicGraph, fwID1, fwID2)
-       path = []
-       for k in hopy[1:-1]:
-          path.append(node(k,self.DynamicGraph[k][hopy[hopy.index(k)+1]]['interf']))
-       t = tunnels(tunnelID, mirrorID, path)
-       return(t)
+        hopy = nx.shortest_path(self.DynamicGraph, fwID1, fwID2)
+        path = []
+        for k in hopy[1:-1]:
+            path.append(node(k,self.DynamicGraph[k][hopy[hopy.index(k)+1]]['interf']))
+            try:
+                DynamicGraph[k][hopy[hopy.index(k)+1]]['tunely'] += [tunnelID]
+            except NameError:
+                DynamicGraph[k][hopy[hopy.index(k)+1]]['tunely'] = [tunnelID]
+        t = tunnels(tunnelID, mirrorID, path)
+        return(t)
        
 ##################KONIEC: Uzly Tunely a topologia########################################
 
