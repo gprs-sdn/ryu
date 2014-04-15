@@ -2,16 +2,20 @@ from ryu.base import app_manager
 from ryu.ofproto import ofproto_v1_3_parser
 from ryu.controller import ofp_event
 from ryu.controller import dpset
+from ryu.controller import handler
 from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
 from ryu.ofproto import ofproto_v1_3_parser
 from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
+from ryu.lib.packet import ipv4
+from ryu.lib.packet import icmp
 from ryu.ofproto import ofproto_parser
 from ryu.ofproto import inet
 from ryu.app.wsgi import ControllerBase, WSGIApplication
 from webob import Response
+from webob import Request
 import struct
 import sys
 import logging
@@ -20,6 +24,7 @@ import json
 import random
 import socket
 import ast
+import array
 
 ################Uzly, tunely a topologia#################
 
@@ -48,28 +53,28 @@ class topology():
         #self.add_link(0xa,0xb,3)
 
         #0xa <-> 0xb
-        self.add_link(0xa,0xb,3)
-        self.add_link(0xb,0xa,1)
+        #self.add_link(0xa,0xb,3)
+        #self.add_link(0xb,0xa,1)
         
         #0xa <-> 0xd
-        self.add_link(0xa,0xd,4)
-        self.add_link(0xd,0xa,1)
+        #self.add_link(0xa,0xd,4)
+        #self.add_link(0xd,0xa,1)
     
         #0xb <-> 0xc
-        self.add_link(0xb,0xc,3)
-        self.add_link(0xc,0xb,1)
+        #self.add_link(0xb,0xc,3)
+        #self.add_link(0xc,0xb,1)
 
         #0xb <-> 0xd
-        self.add_link(0xb,0xd,2)
-        self.add_link(0xd,0xb,2)
+        #self.add_link(0xb,0xd,2)
+        #self.add_link(0xd,0xb,2)
 
         #0xc <-> 0xe
-        self.add_link(0xc,0xe,2)
-        self.add_link(0xe,0xc,2)
+        #self.add_link(0xc,0xe,2)
+        #self.add_link(0xe,0xc,2)
 
         #0xd <-> 0xe
-        self.add_link(0xd,0xe,3)
-        self.add_link(0xe,0xd,1)
+        #self.add_link(0xd,0xe,3)
+        #self.add_link(0xe,0xd,1)
       
 
         #end_linky
@@ -132,17 +137,16 @@ VGSN_IP="14.13.12.11"
 VGSN_PORT=23000
 BSS_EDGE_FORWARDER=[0xa]
 class PDPContext:
-    def __init__(self, bvci, tlli, sapi, nsapi, tunnel_port, tunnel_internet, tunnel_bss, ip):
+    def __init__(self, bvci, tlli, sapi, nsapi, tunnel_out, tunnel_in, clientIP):
         self.bvci = bvci
         self.tlli = tlli
         self.sapi = sapi
         self.nsapi = nsapi
         #TODO: QoS a tunnel treba premysliet
-        self.ip = ip
-        self.tunnel_port = tunnel_port
-        self.tunnel_internet = tunnel_internet
-        self.tunnel_bss = tunnel_bss
-
+        self.tunnel = []
+        self.tunnel.append(tunnel_out)
+        self.tunnel.append(tunnel_in)
+        self.clientIP = clientIP
 # REST API for "mac tunnels"
 #
 # Test REST API
@@ -198,11 +202,17 @@ class GPRSControll(app_manager.RyuApp):
                        conditions=dict(method=['GET']))
 
         #volanie na uri /gprs/pdp/{add/mod/del} spusti funkciu mod_pdp v triede RestCall
-        uri = path + '/pdp/{cmd}'
+        uri = path + '/pdp/{opt}'
         mapper.connect('stats',uri,
-                       controller=RestCall, action='mod_pdp',
-                       conditions=dict(method=['POST']))
+                       controller=RestCall, action='info',
+                       conditions=dict(method=['GET']))
         
+        #uri = path + '/pdp/{cmd}'
+        #mapper.connect('stats',uri,
+        #               controller=RestCall, action='mod_pdp',
+        #               conditions=dict(method=['POST']))
+        
+
     def on_inner_dp_join(self, dp):
         """ Add new inner (BSS side) forwarder joined our network.
         
@@ -210,16 +220,21 @@ class GPRSControll(app_manager.RyuApp):
             dp -- datapath
 
         """
-        if dp.id in BSS_EDGE_FORWARDER:
-            ofp = dp.ofproto
-            parser = dp.ofproto_parser
-            # zmazme vsetky existujuce pravidla
-            dp.send_msg(parser.OFPFlowMod(datapath=dp, command=ofp.OFPFC_DELETE))
-            dp.send_msg(parser.OFPFlowMod(datapath=dp, command=ofp.OFPFC_DELETE, table_id=OF_GPRS_TABLE))
+        ofp = dp.ofproto
+        parser = dp.ofproto_parser
+        # zmazme vsetky existujuce pravidla
+        dp.send_msg(parser.OFPFlowMod(datapath=dp, command=ofp.OFPFC_DELETE))
+        dp.send_msg(parser.OFPFlowMod(datapath=dp, command=ofp.OFPFC_DELETE, table_id=OF_GPRS_TABLE))
 
-            ##########################
-            # hlavna flow tabulka (0)
-    
+        ##########################
+        # hlavna flow tabulka (0)
+        #Discovery ping (test ipv4_dst=0.0.0.2) ide na controller
+        match = parser.OFPMatch(eth_type=0x0800, ipv4_dst='0.0.0.2')
+        actions = [ parser.OFPActionOutput(ofp.OFPP_CONTROLLER) ]
+        self.add_flow(dp, 100, match, actions) 
+
+        if dp.id in BSS_EDGE_FORWARDER:
+               
             # UDP 23000 je GPRS-NS 
             inst = [ parser.OFPInstructionGotoTable(OF_GPRS_TABLE) ]
             match = parser.OFPMatch(eth_type=0x0800,ip_proto=inet.IPPROTO_UDP, udp_dst=VGSN_PORT)
@@ -276,14 +291,89 @@ class GPRSControll(app_manager.RyuApp):
         del self.waiters[dp.id][msg.xid]
         lock.set()
 
-    @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
-    def switch_features_handler(self, ev):
-        #TODO: check if this is new switch and add it to list of switches
-        self.on_inner_dp_join(ev.msg.datapath)
+    #@set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
+    #def switch_features_handler(self, ev):
+    #    #TODO: check if this is new switch and add it to list of switches
+    #    self.on_inner_dp_join(ev.msg.datapath)
 
+    #@set_ev_cls(ofp_event.EventOFPPortStatus)
+    #def vypadok(self, ev):
+    #    print('~~~~~~~~~~~~~DEBUG~~~~~~~~~~~~~~~~~~~~~~~~~~')
+ 
+    def _ping(self, dp, port_out):
+        ofp = dp.ofproto
+        parser = dp.ofproto_parser
+        pkt = packet.Packet()
+        pkt.add_protocol(ethernet.ethernet(ethertype=0x0800,
+                                           dst='ff:ff:ff:ff:ff:ff',
+                                           src='aa:aa:aa:aa:aa:aa'))
+
+        pkt.add_protocol(ipv4.ipv4(dst='0.0.0.2',
+                                   src='0.0.0.1',
+                                   proto=1))
+
+        pkt.add_protocol(icmp.icmp(type_=8,
+                                   code=0,
+                                   csum=0,
+                                   data=icmp.echo(1,1,"{'dpid' : "+str(dp.id)+",'port_out' : "+str(port_out)+"}")))
+        pkt.serialize()
+        data=pkt.data
+        actions=[parser.OFPActionOutput(port_out,0)]
+        out=parser.OFPPacketOut(datapath=dp, buffer_id=ofp.OFP_NO_BUFFER, in_port=ofp.OFPP_CONTROLLER, actions=actions, data=data)
+        dp.send_msg(out)
+    
     @set_ev_cls(ofp_event.EventOFPPortStatus)
-    def vypadok(self, ev):
-        print('~~~~~~~~~~~~~DEBUG~~~~~~~~~~~~~~~~~~~~~~~~~~')
+    def port_change(self, ev):
+        print('~~~~~~~~~~~~~Port Change Debug~~~~~~~~~~~~~~~~~~~~~~~')
+
+    @set_ev_cls(ofp_event.EventOFPPacketIn)
+    def _packet_in(self, ev):
+        if ev.msg.match['ipv4_dst'] == '0.0.0.2' and ev.msg.match['ip_proto'] == 1:
+            neighbourDPID=self._get_icmp_data(packet.Packet(array.array('B', ev.msg.data)),'dpid')
+            neighbourPort=self._get_icmp_data(packet.Packet(array.array('B', ev.msg.data)),'port_out')
+            #print('Som',ev.msg.datapath.id,
+            #      ', dostal som spravu na porte: ',ev.msg.match['in_port'], 
+            #      ' od cisla:',nieghbourDPID,
+            #      ' ktory ma ma pripojeneho na porte',neighbourPort)
+            topo.add_link(ev.msg.datapath.id, neighbourDPID, ev.msg.match['in_port'])
+            topo.add_link(neighbourDPID, ev.msg.datapath.id, neighbourPort )
+            topo.reload_topology()
+            print('Topology changed')
+
+    @set_ev_cls(ofp_event.EventOFPStateChange)
+    def switch_woke_up(self, ev):
+        if ev.state == handler.MAIN_DISPATCHER:
+            self.on_inner_dp_join(ev.datapath)
+            dp = ev.datapath
+            ofp = dp.ofproto
+            parser = dp.ofproto_parser
+            for var in dp.ports:
+                if var != (ofp.OFPP_CONTROLLER+1):
+                    self._ping(dp,var)
+        #if ev.state == handler.DEAD_DISPATCHER:
+        #    for context in active_contexts:
+        #        for node in context.tunnel.nodes:
+        #            print(node.dpid)
+        #    print('##################################################################')
+
+    def _get_icmp_data(self, pkt, req):
+
+        payload = ''
+        for p in pkt:
+            if p.protocol_name == 'icmp':
+                for char in p.data.data:
+                    payload+=(chr(char))
+        slovnik = ast.literal_eval(payload.rstrip('\0'))
+        return(slovnik.get(req))
+
+
+    def add_flow(self, dp, priority, match, actions):
+        ofp = dp.ofproto
+        parser = dp.ofproto_parser
+
+        inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
+        mod = parser.OFPFlowMod(datapath=dp, priority=priority, match=match, instructions=inst)
+        dp.send_msg(mod)
 
 
 class RestCall(ControllerBase):
@@ -295,12 +385,45 @@ class RestCall(ControllerBase):
 
     def info(self, req, opt):
         resp = str(opt)
-        LOG.debug('~~~DEBUG~~~')
-        return (Response(content_type='text', body=resp))
+        args=[]
+        result={}
+        GET_data=''
+        print('~~~DEBUG info~~~')
+        for var in opt:
+            if var == '&':
+                args.append(GET_data)
+                GET_data=''
+                continue
+            GET_data+=var
+        args.append(GET_data)
+        cnt=False
+        
+        for var in args:
+            cnt=False
+            key=''
+            value=''
+            for char in var:
+                if char == '=':
+                    cnt=True
+                    continue
+                if cnt == False:
+                    key+=char
+                if cnt == True:
+                    value+=char
+            if value != '':
+                print(key)
+                print(value)
+                result[str(key)] = str(value)
+        self.mod_pdp(rest_body=result, cmd='add')
+        return (Response(content_type='text', body='{"address":"172.20.85.145","dns1":"8.8.8.8","dns2":"8.8.4.4"}'))
 
-    def mod_pdp (self, rest_body, cmd, mirror = 0, TID=0, mirrorTID=0):
+    def mod_pdp (self, rest_body, cmd, mirror = 0, TID=0, mirrorTID=0, t_out=None, t_in=None):
         #vytiahneme parametre z tela REST spravy
-        body = ast.literal_eval(rest_body.body)
+        if type(rest_body) == dict:
+           body=rest_body
+        elif type(rest_body) == Request:
+           body = ast.literal_eval(rest_body.body)
+       
         start = int(body.get('start'), 16)
         end = int(body.get('end'), 16)
         bvci = int(body.get('bvci'))
@@ -308,25 +431,25 @@ class RestCall(ControllerBase):
         sapi = int(body.get('sapi'))
         nsapi = int(body.get('nsapi'))
         clientIP = str(body.get('clientIP'))
-        #active_contexts.append( PDPContext(bvci, tlli, sapi, nsapi,'10.10.10.10', ) )
         two_way = body.get('mirror')
         if mirror == 0:
             mirrorTID = self.get_mac()
             TID = self.get_mac()
+            t_out = topo.get_tunnel(start, end, TID, mirrorTID)
+            t_in = topo.get_tunnel(end, start, mirrorTID, TID)
+
         # do 't' dostaneme tunnel triedy 'tunnels'
         #pri tunely semrom von start -> end
         #pri tunely smerom dnu end -> start
-        if mirror==0:
-            t = topo.get_tunnel(start, end, TID, mirrorTID)
-        elif mirror==1:
-            t = topo.get_tunnel(end, start, TID, mirrorTID)
-
+        #TODO:toto...nieco....fuck
+        
         #TODO: Handlovanie 'cmd' hodnoty
+        active_contexts.append( PDPContext(bvci, tlli, sapi, nsapi, t_out, t_in, clientIP, ) )
 
         ############################################Smerom von##############################################################################
         if mirror==0:
             ######Tato cast je pre prvy node v tunely smerom von, pretoze ten musi decapsulovat GPRS-NS aj zmenit MAC adresy################
-            dp = self.dpset.get(t.nodes[0].dpid)
+            dp = self.dpset.get(t_out.nodes[0].dpid)
             parser = dp.ofproto_parser
             match = parser.OFPMatch( in_port=1,
                                      ns_type=0,
@@ -336,17 +459,17 @@ class RestCall(ControllerBase):
                                      sndcp_nsapi=nsapi)
                                
             actions = [GPRSActionPopGPRSNS(), GPRSActionPopUDPIP(),
-                       parser.OFPActionSetField(eth_src=t.mirrorTID),parser.OFPActionSetField(eth_dst=t.TID),
-                       parser.OFPActionOutput(t.nodes[0].port_out)]
+                       parser.OFPActionSetField(eth_src=t_out.mirrorTID),parser.OFPActionSetField(eth_dst=t_out.TID),
+                       parser.OFPActionOutput(t_out.nodes[0].port_out)]
             self.add_flow(dp, 10, match, actions, OF_GPRS_TABLE)
 
             ###############################################################################################################################
 
             #########Tento cyklus prebehne pre vsetky ostatne nody kde sa pridaju len forwardovacie pravidla a na poslednom sa setne broadcast eth_dst#
-            for var in t.nodes[1:]:
+            for var in t_out.nodes[1:]:
                 dp = self.dpset.get(var.dpid)
                 parser = dp.ofproto_parser
-                match = parser.OFPMatch(eth_dst=t.TID)
+                match = parser.OFPMatch(eth_dst=t_out.TID)
                 actions = [parser.OFPActionOutput(var.port_out)]
                 if var.dpid == 0xc:
                     actions.insert(0,parser.OFPActionSetField(eth_dst='ff:ff:ff:ff:ff:ff'))
@@ -355,19 +478,19 @@ class RestCall(ControllerBase):
         
         ###################################Smerom dnu######################################################################################
         if mirror==1:
-            dp = self.dpset.get(t.nodes[0].dpid)
+            dp = self.dpset.get(t_in.nodes[0].dpid)
             parser = dp.ofproto_parser
             ######################################Prvy paket na zaklade cielovej IP adresy (clientIP) natlacit do tunelu###################
-            match = parser.OFPMatch(eth_type=0x0800, ipv4_src=clientIP) 
+            match = parser.OFPMatch(eth_type=0x0800, ipv4_dst=clientIP) 
             actions = [parser.OFPActionSetField(eth_src=mirrorTID), parser.OFPActionSetField(eth_dst=TID),
-                       parser.OFPActionOutput(t.nodes[0].port_out)]
+                       parser.OFPActionOutput(t_in.nodes[0].port_out)]
             self.add_flow(dp, 9, match, actions, 0)
             
             #########Tento cyklus prebehne pre vsetky ostatne nody kde sa pridaju len forwardovacie pravidla a na poslednom sa pushnu GPRS signalizacne veci#
-            for var in t.nodes[1:]:
+            for var in t_in.nodes[1:]:
                 dp = self.dpset.get(var.dpid)
                 parser = dp.ofproto_parser
-                match = parser.OFPMatch(eth_dst=t.TID)
+                match = parser.OFPMatch(eth_dst=t_in.TID)
                 actions = [parser.OFPActionOutput(var.port_out)]
                 if var.dpid == 0xa:
                     actions.insert(0, parser.OFPActionSetField(eth_dst='ff:ff:ff:ff:ff:ff'))
@@ -380,8 +503,7 @@ class RestCall(ControllerBase):
         # Ak pride v RESTE 'mirror' : 'yes' na zaciatku sa to ulozi do premennej 'two_way'
         # kontrola na mirror == 0 zabezpecuje aby sa nerekurzovalo donekonecna lebo rekurzivne zavolana funkcia ma mirror == 1
         if two_way == 'yes' and mirror == 0:     
-            self.mod_pdp(rest_body, cmd, 1, mirrorTID, TID)   
-            LOG.debug('~~~~~~~~~~~~~~~~~~~~~~~~~~Debug~rekurs~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~')  
+            self.mod_pdp(rest_body, cmd, 1, mirrorTID, TID, t_out, t_in)
         return (Response(content_type='text', body='ok'))
 
     def add_flow(self, dp, priority, match, actions, table = 0):
