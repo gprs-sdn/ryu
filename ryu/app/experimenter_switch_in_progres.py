@@ -7,10 +7,12 @@ from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
 from ryu.ofproto import ofproto_v1_3_parser
+from ryu.ofproto import ether
 from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
 from ryu.lib.packet import ipv4
 from ryu.lib.packet import icmp
+from ryu.lib.packet import arp
 from ryu.ofproto import ofproto_parser
 from ryu.ofproto import inet
 from ryu.app.wsgi import ControllerBase, WSGIApplication
@@ -26,6 +28,7 @@ import socket
 import ast
 import array
 import inspect
+import pprint
 
 ################Uzly, tunely a topologia#################
 
@@ -80,14 +83,14 @@ class topology():
 
         #end_linky
         #BSS node <-> 0xa
-        self.add_link(0,0xa,1)
-        self.add_link(0xa,0,1)
+        self.add_link('901-70-1-0',0xa,1)
+        self.add_link(0xa,'901-70-1-0',1)
         #vGSN node <-> 0xa
-        self.add_link(1,0xa,1)
-        self.add_link(0xa,1,2)
+        #XXX:self.add_link(1,0xa,1)
+        #XXX:self.add_link(0xa,1,2)
         #internet <-> 0xc
-        self.add_link(2,0xc,1)
-        self.add_link(0xc,2,3)
+        self.add_link('internet',0xc,1)
+        self.add_link(0xc,'internet',3)
         self.reload_topology()
 
     def vymaz_tunel(tunelID):
@@ -140,6 +143,7 @@ class topology():
 LOG = logging.getLogger('ryu.app.ofctl_rest')
 BSS_PHY_PORT = 1
 VGSN_PHY_PORT = 2
+INET_PHY_PORT = 3
 
 GPRS_SDN_EXPERIMENTER = int("0x42", 16)
 OF_GPRS_TABLE = 2
@@ -158,6 +162,7 @@ BSS_PORT=1234
 VGSN_IP="14.13.12.11"
 VGSN_PORT=23000
 BSS_EDGE_FORWARDER=[0xa]
+INET_EDGE_FORWARDER=[0xc]
 class PDPContext:
     def __init__(self, bvci, tlli, sapi, nsapi, tunnel_out, tunnel_in, clientIP):
         self.bvci = bvci
@@ -240,9 +245,13 @@ class GPRSControll(app_manager.RyuApp):
         Keyword arguments:
             dp -- datapath
 
+        TODO:
+          VGSN inside our SDN network -- routing of GPRS-NS traffic
+
         """
         ofp = dp.ofproto
         parser = dp.ofproto_parser
+        
         # zmazme vsetky existujuce pravidla
         dp.send_msg(parser.OFPFlowMod(datapath=dp, command=ofp.OFPFC_DELETE))
         dp.send_msg(parser.OFPFlowMod(datapath=dp, command=ofp.OFPFC_DELETE, table_id=OF_GPRS_TABLE))
@@ -254,13 +263,35 @@ class GPRSControll(app_manager.RyuApp):
         actions = [ parser.OFPActionOutput(ofp.OFPP_CONTROLLER) ]
         self.add_flow(dp, 100, match, actions) 
 
+        if dp.id in INET_EDGE_FORWARDER:
+            # send all ARP requests to forwarder
+            match = parser.OFPMatch(in_port=INET_PHY_PORT, eth_type=0x0806, arp_op=1)
+            actions = [ parser.OFPActionOutput(ofp.OFPP_CONTROLLER) ]
+            inst = [ parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions) ]
+            req = parser.OFPFlowMod(datapath=dp, priority=10, match=match, instructions=inst)
+            dp.send_msg(req)
+
         if dp.id in BSS_EDGE_FORWARDER:
-               
+
             # UDP 23000 je GPRS-NS 
             inst = [ parser.OFPInstructionGotoTable(OF_GPRS_TABLE) ]
             match = parser.OFPMatch(eth_type=0x0800,ip_proto=inet.IPPROTO_UDP, udp_dst=VGSN_PORT)
-            req = parser.OFPFlowMod(datapath=dp, priority=1, match=match, instructions=inst)
+            req = parser.OFPFlowMod(datapath=dp, priority=200, match=match, instructions=inst)
             dp.send_msg(req)
+
+            # VGSN_PHY a BSS_PHY porty su prebridgeovane -- DHCP, ARP, Abis & stuff
+            # XXX: co ak bss a vgsn nie su spolu na jednom DPID?
+            actions = [ parser.OFPActionOutput(VGSN_PHY_PORT) ]
+            inst = [ parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions) ]
+            match = parser.OFPMatch(in_port=BSS_PHY_PORT)
+            req = parser.OFPFlowMod(datapath=dp, priority=10, match=match, instructions=inst)
+            dp.send_msg(req)
+            actions = [ parser.OFPActionOutput(BSS_PHY_PORT) ]
+            inst = [ parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions) ]
+            match = parser.OFPMatch(in_port=VGSN_PHY_PORT)
+            req = parser.OFPFlowMod(datapath=dp, priority=10, match=match, instructions=inst)
+            dp.send_msg(req)
+
    
             #################
             # gprsns tabulka
@@ -286,10 +317,17 @@ class GPRSControll(app_manager.RyuApp):
             req = parser.OFPFlowMod(datapath=dp, table_id=OF_GPRS_TABLE, priority=1, match=match, instructions=inst)
             dp.send_msg(req)
 
-           # vsetko ostatne je signalizacia - tlacime do vGSN
+           # vsetko ostatne je signalizacia - tlacime do vGSN, alebo BSS
+            # XXX: co ak bss a vgsn nie su spolu na jednom DPID?
             actions = [ parser.OFPActionOutput(VGSN_PHY_PORT) ]
             inst = [ parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions) ]
-            req = parser.OFPFlowMod(datapath=dp, table_id=OF_GPRS_TABLE, priority=0, instructions=inst)
+            match = parser.OFPMatch(in_port=BSS_PHY_PORT)
+            req = parser.OFPFlowMod(datapath=dp, table_id=OF_GPRS_TABLE, priority=0, match=match, instructions=inst)
+            dp.send_msg(req)
+            actions = [ parser.OFPActionOutput(BSS_PHY_PORT) ]
+            inst = [ parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions) ]
+            match = parser.OFPMatch(in_port=VGSN_PHY_PORT)
+            req = parser.OFPFlowMod(datapath=dp, table_id=OF_GPRS_TABLE, priority=0, match=match, instructions=inst)
             dp.send_msg(req)
 
     def stats_reply_handler(self, ev):
@@ -350,7 +388,27 @@ class GPRSControll(app_manager.RyuApp):
 
     @set_ev_cls(ofp_event.EventOFPPacketIn)
     def _packet_in(self, ev):
-        if ev.msg.match['ipv4_dst'] == '0.0.0.2' and ev.msg.match['ip_proto'] == 1:
+        dp = ev.msg.datapath
+        ofp = dp.ofproto
+        parser = dp.ofproto_parser
+        match = ev.msg.match
+
+        if match['eth_type'] == 0x0806 and match['arp_op'] == 1:
+            LOG.debug("prisiel nam ARP request... ")
+
+            eth = ethernet.ethernet(match['arp_sha'], dp.id, ether.ETH_TYPE_ARP)
+            arp_reply = arp.arp_ip(2, dp.id, match['arp_tpa'], match['arp_sha'], match['arp_spa'])
+            LOG.debug("  arp_reply="+pprint.pformat(arp_reply))
+
+            pkt = packet.Packet()
+            pkt.add_protocol(eth)
+            pkt.add_protocol(arp_reply)
+            pkt.serialize()
+            actions=[parser.OFPActionOutput(match['in_port'])]
+            out=parser.OFPPacketOut(datapath=dp, buffer_id=ofp.OFP_NO_BUFFER, in_port=ofp.OFPP_CONTROLLER, actions=actions, data=pkt.data)
+            dp.send_msg(out)
+
+        if match['eth_type'] == 0x0800 and match['ipv4_dst'] == '0.0.0.2' and match['ip_proto'] == 1:
             neighbourDPID=self._get_icmp_data(packet.Packet(array.array('B', ev.msg.data)),'dpid')
             neighbourPort=self._get_icmp_data(packet.Packet(array.array('B', ev.msg.data)),'port_out')
             #print('Som',ev.msg.datapath.id,
@@ -360,7 +418,7 @@ class GPRSControll(app_manager.RyuApp):
             topo.add_link(ev.msg.datapath.id, neighbourDPID, ev.msg.match['in_port'])
             topo.add_link(neighbourDPID, ev.msg.datapath.id, neighbourPort )
             topo.reload_topology()
-            print('Topology changed')
+            LOG.debug('Topology changed')
 
     @set_ev_cls(ofp_event.EventOFPStateChange)
     def switch_woke_up(self, ev):
@@ -442,8 +500,12 @@ class RestCall(ControllerBase):
     def mod_pdp (self, rest_body, cmd, mirror = 0, TID=0, mirrorTID=0, t_out=None, t_in=None):
         #vytiahneme parametre z tela REST spravy
         body = ast.literal_eval(rest_body.body)
-        start = int(body.get('start'), 16)
-        end = int(body.get('end'), 16)
+        pprint.pformat(self)
+        LOG.debug('vytvaram tunel s parametrani: ')
+        LOG.debug('self='+pprint.pformat(self))
+        LOG.debug('body='+pprint.pformat(body))
+        start = str(body.get('rai'))
+        end = str(body.get('apn'))
         bvci = int(body.get('bvci'))
         tlli = int(body.get('tlli'), 16)
         sapi = int(body.get('sapi'))
@@ -489,7 +551,11 @@ class RestCall(ControllerBase):
                 parser = dp.ofproto_parser
                 match = parser.OFPMatch(eth_dst=t_out.TID)
                 actions = [parser.OFPActionOutput(var.port_out)]
+                # XXX: upratat podla topologie
                 if var.dpid == 0xc:
+                    #XXX: MAC adresu sa ucime cez ARP na poziadavku...
+                    actions.insert(0,parser.OFPActionSetField(eth_dst='8e:bd:5a:41:f2:d4'))
+                if var.dpid == 0xa:
                     actions.insert(0,parser.OFPActionSetField(eth_dst='ff:ff:ff:ff:ff:ff'))
                 self.add_flow(dp, 10, match, actions, 0)
             ###############################################################################################################################
