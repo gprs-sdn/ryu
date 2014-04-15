@@ -25,6 +25,7 @@ import random
 import socket
 import ast
 import array
+import inspect
 
 ################Uzly, tunely a topologia#################
 
@@ -91,21 +92,21 @@ class topology():
 
     def vymaz_tunel(tunelID):
         for hrana in ((u,v) for u,v,d in DynamicGraph.edges_iter(data=True) if tunelID in d['tunely']):
-            DynamicGraph[hrana[0]][hrana[1]]['tunely'] = []
+            self.DynamicGraph[hrana[0]][hrana[1]]['tunely'] = []
 
     def add_forwarder(self, fwID):
         self.StaticGraph.add_node(fwID)
 
     def add_link(self, fwID1, fwID2, ifnumm):
-        self.StaticGraph.add_edge(fwID1, fwID2, interf=ifnumm)
+        self.StaticGraph.add_edge(fwID1, fwID2, interf=ifnumm, tunely=[])
 
     def link_down(fwID1, fwID2):
         for tunelID in DynamicGraph[fwID1][fwID2]['tunely']:
             vymaz_tunel(tunelID)
-    DynamicGraph.remove_edge(fwID1, fwID2)
+        self.DynamicGraph.remove_edge(fwID1, fwID2)
 
     def link_up(fwID1, fwID2):
-        DynamicGraph.edge[fwID1][fwID2] = StaticGraph[fwID1][fwID2]
+        self.DynamicGraph.edge[fwID1][fwID2] = StaticGraph[fwID1][fwID2]
 	
     def forwarder_down(self, fwID):
         tunelIDs = []
@@ -113,7 +114,7 @@ class topology():
             tunelIDs += DynamicGraph[fwID][v]['tunely']
         for tunelID in tunelIDs:
             vymaz_tunel(tunelID)
-    DynamicGraph.remove_edges_from(nx.edges(DynamicGraph, fwID))
+        self.DynamicGraph.remove_edges_from(nx.edges(DynamicGraph, fwID))
 
     def forwarder_up(self, fwID):
         self.DynamicGraph.add_edges_from(StaticGraph.edges(fwID, data=True))
@@ -127,9 +128,9 @@ class topology():
         for k in hopy[1:-1]:
             path.append(node(k,self.DynamicGraph[k][hopy[hopy.index(k)+1]]['interf']))
             try:
-                DynamicGraph[k][hopy[hopy.index(k)+1]]['tunely'] += [tunnelID]
+                self.DynamicGraph[k][hopy[hopy.index(k)+1]]['tunely'] += [tunnelID]
             except NameError:
-                DynamicGraph[k][hopy[hopy.index(k)+1]]['tunely'] = [tunnelID]
+                self.DynamicGraph[k][hopy[hopy.index(k)+1]]['tunely'] = [tunnelID]
         t = tunnels(tunnelID, mirrorID, path)
         return(t)
        
@@ -223,17 +224,16 @@ class GPRSControll(app_manager.RyuApp):
                        conditions=dict(method=['GET']))
 
         #volanie na uri /gprs/pdp/{add/mod/del} spusti funkciu mod_pdp v triede RestCall
-        uri = path + '/pdp/{opt}'
+        uri = path + '/pdp/{cmd}'
         mapper.connect('stats',uri,
-                       controller=RestCall, action='info',
+                       controller=RestCall, action='parse_GET',
                        conditions=dict(method=['GET']))
         
-        #uri = path + '/pdp/{cmd}'
-        #mapper.connect('stats',uri,
-        #               controller=RestCall, action='mod_pdp',
-        #               conditions=dict(method=['POST']))
+        uri = path + '/pdp/{cmd}'
+        mapper.connect('stats',uri,
+                       controller=RestCall, action='mod_pdp',
+                       conditions=dict(method=['POST']))
         
-
     def on_inner_dp_join(self, dp):
         """ Add new inner (BSS side) forwarder joined our network.
         
@@ -343,9 +343,10 @@ class GPRSControll(app_manager.RyuApp):
         out=parser.OFPPacketOut(datapath=dp, buffer_id=ofp.OFP_NO_BUFFER, in_port=ofp.OFPP_CONTROLLER, actions=actions, data=data)
         dp.send_msg(out)
     
-    @set_ev_cls(ofp_event.EventOFPPortStatus)
-    def port_change(self, ev):
-        print('~~~~~~~~~~~~~Port Change Debug~~~~~~~~~~~~~~~~~~~~~~~')
+    #@set_ev_cls(ofp_event.EventOFPPortStatus)
+    #def port_change(self, ev):
+        #print(inspect.getmembers(ev.msg))
+        #print(ev.msg.datapath.id)
 
     @set_ev_cls(ofp_event.EventOFPPacketIn)
     def _packet_in(self, ev):
@@ -371,11 +372,13 @@ class GPRSControll(app_manager.RyuApp):
             for var in dp.ports:
                 if var != (ofp.OFPP_CONTROLLER+1):
                     self._ping(dp,var)
-        #if ev.state == handler.DEAD_DISPATCHER:
-        #    for context in active_contexts:
-        #        for node in context.tunnel.nodes:
-        #            print(node.dpid)
-        #    print('##################################################################')
+        if ev.state == handler.DEAD_DISPATCHER:
+            for context in active_contexts:
+                print('mam PDP context')
+                for tunnels in context.tunnel:
+                    for nodes in tunnels:
+                        print('node: ',node.dpid)
+            print('##################################################################')
 
     def _get_icmp_data(self, pkt, req):
 
@@ -404,13 +407,12 @@ class RestCall(ControllerBase):
         self.waiters = data['waiters']
         self.id_pool = []
 
-    def info(self, req, opt):
-        resp = str(opt)
+    def parse_GET(self, req, cmd):
+        resp = str(cmd)
         args=[]
         result={}
         GET_data=''
-        print('~~~DEBUG info~~~')
-        for var in opt:
+        for var in cmd:
             if var == '&':
                 args.append(GET_data)
                 GET_data=''
@@ -432,19 +434,14 @@ class RestCall(ControllerBase):
                 if cnt == True:
                     value+=char
             if value != '':
-                print(key)
-                print(value)
                 result[str(key)] = str(value)
-        self.mod_pdp(rest_body=result, cmd='add')
+        req.body=bytes(result)
+        self.mod_pdp(rest_body=req, cmd='add')
         return (Response(content_type='text', body='{"address":"172.20.85.145","dns1":"8.8.8.8","dns2":"8.8.4.4"}'))
 
     def mod_pdp (self, rest_body, cmd, mirror = 0, TID=0, mirrorTID=0, t_out=None, t_in=None):
         #vytiahneme parametre z tela REST spravy
-        if type(rest_body) == dict:
-           body=rest_body
-        elif type(rest_body) == Request:
-           body = ast.literal_eval(rest_body.body)
-       
+        body = ast.literal_eval(rest_body.body)
         start = int(body.get('start'), 16)
         end = int(body.get('end'), 16)
         bvci = int(body.get('bvci'))
@@ -525,7 +522,7 @@ class RestCall(ControllerBase):
         # kontrola na mirror == 0 zabezpecuje aby sa nerekurzovalo donekonecna lebo rekurzivne zavolana funkcia ma mirror == 1
         if two_way == 'yes' and mirror == 0:     
             self.mod_pdp(rest_body, cmd, 1, mirrorTID, TID, t_out, t_in)
-        return (Response(content_type='text', body='ok'))
+        return (Response(content_type='text', body='{"address":"172.20.85.145","dns1":"8.8.8.8","dns2":"8.8.4.4"}'))
 
     def add_flow(self, dp, priority, match, actions, table = 0):
         ofp = dp.ofproto
