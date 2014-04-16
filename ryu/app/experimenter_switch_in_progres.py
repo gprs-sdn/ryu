@@ -31,6 +31,38 @@ import array
 import inspect
 import pprint
 
+
+## convert IMSI string into byte array
+def imsi_to_bytes(imsi_string):
+  imsi_digits = list(imsi_string)
+  imsi_bytes = [0,0,0,0,0,0,0,0]
+  digit_no = 0
+
+  # imsi is too long... fetch only first 15 characters and nag..
+  if len(imsi_digits) > 15:
+    print "imsi too long... "
+    imsi_digits = imsi_digits[:15]
+
+  # lower 3 bits indicate IMSI number... (0x1)
+  imsi_bytes[0] = 0x1
+
+  # convert string to bytes...
+  for digit in imsi_digits:
+    byte_no = (digit_no+1) / 2;
+    if digit_no % 2:
+      imsi_bytes[byte_no] |= int(digit, 16)
+    else:
+      imsi_bytes[byte_no] |= int(digit, 16) << 4
+    digit_no += 1
+
+  # if we have odd number of digits, set 4th bit to 1
+  # and fill last octets upper nibble with 0xf
+  if not len(imsi_digits)%2:
+    imsi_bytes[0] |= 0x8
+    imsi_bytes[(digit_no+1)/2] |= 0xf0
+
+  return imsi_bytes
+
 ################Uzly, tunely a topologia#################
 
 class node:
@@ -165,7 +197,7 @@ VGSN_PORT=23000
 BSS_EDGE_FORWARDER=[0xa]
 INET_EDGE_FORWARDER=[0xc]
 class PDPContext:
-    def __init__(self, bvci, tlli, sapi, nsapi, tunnel_out, tunnel_in, client_ip):
+    def __init__(self, bvci, tlli, sapi, nsapi, tunnel_out, tunnel_in, client_ip, imsi, drx_param):
         self.bvci = bvci
         self.tlli = tlli
         self.sapi = sapi
@@ -175,6 +207,8 @@ class PDPContext:
         self.tunnels.append(tunnel_out)
         self.tunnels.append(tunnel_in)
         self.client_ip = client_ip
+        self.imsi = imsi
+        self.drx_param = drx_param
 # REST API for "mac tunnels"
 #
 # Test REST API
@@ -515,8 +549,10 @@ class RestCall(ControllerBase):
         LOG.debug('body='+pprint.pformat(body))
         start = str(body.get('rai'))
         end = str(body.get('apn'))
+        imsi = str(body.get('imsi'))
         bvci = int(body.get('bvci'))
         tlli = int(body.get('tlli'), 16)
+        drx_param = int(body.get('drx_param'), 16)
         sapi = int(body.get('sapi'))
         nsapi = int(body.get('nsapi'))
         client_ip = '172.20.85.145'
@@ -532,7 +568,7 @@ class RestCall(ControllerBase):
         #pri tunely smerom dnu end -> start
         
         #TODO: Handlovanie 'cmd' hodnoty
-        active_contexts.append( PDPContext(bvci, tlli, sapi, nsapi, t_out, t_in, client_ip, ) )
+        active_contexts.append( PDPContext(bvci, tlli, sapi, nsapi, t_out, t_in, client_ip, imsi, drx_param) )
         print(t_out.nodes)
         ############################################Smerom von##############################################################################
         if mirror==0:
@@ -591,7 +627,7 @@ class RestCall(ControllerBase):
                     match = parser.OFPMatch(eth_type=0x0800, ipv4_dst=client_ip)
                     actions.insert(0, parser.OFPActionSetField(eth_dst='00:d0:cc:08:02:ba'))
                     actions.insert(0, GPRSActionPushUDPIP(sa=VGSN_IP, da=BSS_IP, sp=VGSN_PORT, dp=BSS_PORT))
-                    actions.insert(0, GPRSActionPushGPRSNS(bvci, tlli, sapi, nsapi)) 
+                    actions.insert(0, GPRSActionPushGPRSNS(bvci, tlli, sapi, nsapi, drx_param, imsi)) 
                 self.add_flow(dp, 11, match, actions, 0)
             ###############################################################################################################################
             
@@ -642,19 +678,26 @@ class GPRSAction(ofproto_v1_3_parser.OFPActionExperimenter):
         ofproto_parser.msg_pack_into("!H", buf, offset+8, self.subtype)
 
 class GPRSActionPushGPRSNS(GPRSAction):
-    def __init__(self, bvci, tlli, sapi, nsapi):
+    def __init__(self, bvci, tlli, sapi, nsapi, drx_param, imsi):
         super(GPRSActionPushGPRSNS,self).__init__(0x0001)
-        self.len = 24
+        self.len = 32
         self.bvci = bvci
         self.tlli = tlli
         self.sapi = sapi
         self.nsapi = nsapi
+        self.drx_param = drx_param
+        self.imsi = imsi
 
     def serialize(self, buf, offset):
         """ Serialize PushGPRSNS action into buffer. """
         super(GPRSActionPushGPRSNS,self).serialize(buf, offset)
-        ofproto_parser.msg_pack_into("!HxxIHBBxxxx", buf, offset+8, 
-                self.subtype, self.tlli, self.bvci, self.sapi, self.nsapi)
+
+        imsi_bytes = imsi_to_bytes(self.imsi)
+
+        LOG.debug("push_gprsns.serialize self="+pprint.pformat(self))
+        ofproto_parser.msg_pack_into("!HxxIHBBHBBBBBBBBBx", buf, offset+8, 
+                self.subtype, self.tlli, self.bvci, self.sapi, self.nsapi, self.drx_param, 
+                len(imsi_bytes), *imsi_bytes)
 
 class GPRSActionPopGPRSNS(GPRSAction):
     def __init__(self):
