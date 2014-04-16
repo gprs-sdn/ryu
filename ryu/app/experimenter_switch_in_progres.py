@@ -158,14 +158,14 @@ topo = topology()
 #    XXX: casom sa mozu porty zmenit, ked restartujeme service na BSS
 # 2) zoznam pripojenych bss-iek
 # 3) v pdp-kontexte sa odkazovat na BSS-ku ku ktorej patri...
-BSS_IP="1.2.3.4"
-BSS_PORT=1234
-VGSN_IP="14.13.12.11"
+BSS_IP="192.168.27.125"
+BSS_PORT=23000
+VGSN_IP="192.168.27.2"
 VGSN_PORT=23000
 BSS_EDGE_FORWARDER=[0xa]
 INET_EDGE_FORWARDER=[0xc]
 class PDPContext:
-    def __init__(self, bvci, tlli, sapi, nsapi, tunnel_out, tunnel_in, clientIP):
+    def __init__(self, bvci, tlli, sapi, nsapi, tunnel_out, tunnel_in, client_ip):
         self.bvci = bvci
         self.tlli = tlli
         self.sapi = sapi
@@ -174,7 +174,7 @@ class PDPContext:
         self.tunnels = []
         self.tunnels.append(tunnel_out)
         self.tunnels.append(tunnel_in)
-        self.clientIP = clientIP
+        self.client_ip = client_ip
 # REST API for "mac tunnels"
 #
 # Test REST API
@@ -189,7 +189,7 @@ class PDPContext:
 #
 # Example body:
 #
-#{'start' : '0', 'end' : '2', 'bvci' : '2', 'tlli' : '0xc5a4aeea', 'sapi' : '3', 'nsapi' : '5', 'clientIP' : '172.20.0.2', 'mirror' : 'yes'}
+#{'start' : '0', 'end' : '2', 'bvci' : '2', 'tlli' : '0xc5a4aeea', 'sapi' : '3', 'nsapi' : '5', 'mirror' : 'yes'}
 #
 # start = datapath ID of first forwarder (or pseudo-node, BSS, vGSN etc.) in tunnel
 # end = datapath ID of last forwarder (or pseudo-node like APN) in tunnel
@@ -402,7 +402,7 @@ class GPRSControll(app_manager.RyuApp):
         if match['eth_type'] == 0x0806 and match['arp_op'] == 1:
             LOG.debug("prisiel nam ARP request... ")
             for context in active_contexts:
-                if match['arp_tpa'] == context.clientIP:
+                if match['arp_tpa'] == context.client_ip:
                     reply_mac = context.tunnels[0].TID
             eth = ethernet.ethernet(match['arp_sha'], dp.id, ether.ETH_TYPE_ARP)
             arp_reply = arp.arp_ip(2, reply_mac, match['arp_tpa'], match['arp_sha'], match['arp_spa'])
@@ -441,7 +441,7 @@ class GPRSControll(app_manager.RyuApp):
         if ev.state == handler.DEAD_DISPATCHER:
             for context in active_contexts:
                 print('mam PDP context')
-                for tunnels in context.tunnel:
+                for tunnels in context.tunnels:
                     for nodes in tunnels:
                         print('node: ',node.dpid)
             print('##################################################################')
@@ -519,8 +519,8 @@ class RestCall(ControllerBase):
         tlli = int(body.get('tlli'), 16)
         sapi = int(body.get('sapi'))
         nsapi = int(body.get('nsapi'))
-        clientIP = str(body.get('clientIP'))
-        two_way = body.get('mirror')
+        client_ip = '172.20.85.145'
+        two_way = 'yes'
         if mirror == 0:
             mirrorTID = self.get_mac()
             TID = self.get_mac()
@@ -532,7 +532,7 @@ class RestCall(ControllerBase):
         #pri tunely smerom dnu end -> start
         
         #TODO: Handlovanie 'cmd' hodnoty
-        active_contexts.append( PDPContext(bvci, tlli, sapi, nsapi, t_out, t_in, clientIP, ) )
+        active_contexts.append( PDPContext(bvci, tlli, sapi, nsapi, t_out, t_in, client_ip, ) )
         print(t_out.nodes)
         ############################################Smerom von##############################################################################
         if mirror==0:
@@ -572,11 +572,14 @@ class RestCall(ControllerBase):
         if mirror==1:
             dp = self.dpset.get(t_in.nodes[0].dpid)
             parser = dp.ofproto_parser
-            ######################################Prvy paket na zaklade cielovej IP adresy (clientIP) natlacit do tunelu###################
-            match = parser.OFPMatch(eth_type=0x0800, ipv4_dst=clientIP) 
+            ######################################Prvy paket na zaklade cielovej IP adresy (client_ip) natlacit do tunelu###################
+            LOG.debug('  tin='+pprint.pformat(t_in))
+            LOG.debug('  tout='+pprint.pformat(t_out))
+            LOG.debug('  port_out='+pprint.pformat(t_in.nodes[0].port_out))
+            match = parser.OFPMatch(eth_type=0x0800, ipv4_dst=client_ip) 
             actions = [parser.OFPActionSetField(eth_src=mirrorTID), parser.OFPActionSetField(eth_dst=TID),
                        parser.OFPActionOutput(t_in.nodes[0].port_out)]
-            self.add_flow(dp, 9, match, actions, 0)
+            self.add_flow(dp, 11, match, actions, 0)
             
             #########Tento cyklus prebehne pre vsetky ostatne nody kde sa pridaju len forwardovacie pravidla a na poslednom sa pushnu GPRS signalizacne veci#
             for var in t_in.nodes[1:]:
@@ -585,10 +588,11 @@ class RestCall(ControllerBase):
                 match = parser.OFPMatch(eth_dst=t_in.TID)
                 actions = [parser.OFPActionOutput(var.port_out)]
                 if var.dpid == 0xa:
-                    actions.insert(0, parser.OFPActionSetField(eth_dst='ff:ff:ff:ff:ff:ff'))
+                    match = parser.OFPMatch(eth_type=0x0800, ipv4_dst=client_ip)
+                    actions.insert(0, parser.OFPActionSetField(eth_dst='00:d0:cc:08:02:ba'))
                     actions.insert(0, GPRSActionPushUDPIP(sa=VGSN_IP, da=BSS_IP, sp=VGSN_PORT, dp=BSS_PORT))
                     actions.insert(0, GPRSActionPushGPRSNS(bvci, tlli, sapi, nsapi)) 
-                self.add_flow(dp, 9, match, actions, 0)
+                self.add_flow(dp, 11, match, actions, 0)
             ###############################################################################################################################
             
         
@@ -596,7 +600,7 @@ class RestCall(ControllerBase):
         # kontrola na mirror == 0 zabezpecuje aby sa nerekurzovalo donekonecna lebo rekurzivne zavolana funkcia ma mirror == 1
         if two_way == 'yes' and mirror == 0:     
             self.mod_pdp(rest_body, cmd, 1, mirrorTID, TID, t_out, t_in)
-        return (Response(content_type='text', body='{"address":"172.20.85.145","dns1":"8.8.8.8","dns2":"8.8.4.4"}'))
+        return (Response(content_type='text', body='{"address":"'+client_ip+'","dns1":"8.8.8.8","dns2":"8.8.4.4"}'))
 
     def add_flow(self, dp, priority, match, actions, table = 0):
         ofp = dp.ofproto
@@ -609,10 +613,10 @@ class RestCall(ControllerBase):
     #generator mac adresy pre ID tunela    
     def get_mac(self):
         mac_char='0123456789abcdef'
-        mac_addr=''
+        mac_addr='02:'
         available=0
         while available == 0:
-            for i in range(6):
+            for i in range(5):
                 for y in range(2):
                     mac_addr = mac_addr + random.choice(mac_char)
                 mac_addr = mac_addr + ':'
