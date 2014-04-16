@@ -18,6 +18,7 @@ from ryu.ofproto import inet
 from ryu.app.wsgi import ControllerBase, WSGIApplication
 from webob import Response
 from webob import Request
+from cgi import parse_qs
 import struct
 import sys
 import logging
@@ -80,7 +81,7 @@ class topology():
         #self.add_link(0xd,0xe,3)
         #self.add_link(0xe,0xd,1)
       
-
+        #TODO: odstranit staticke pseudo-nody
         #end_linky
         #BSS node <-> 0xa
         self.add_link('901-70-1-0',0xa,1)
@@ -170,9 +171,9 @@ class PDPContext:
         self.sapi = sapi
         self.nsapi = nsapi
         #TODO: QoS a tunnel treba premysliet
-        self.tunnel = []
-        self.tunnel.append(tunnel_out)
-        self.tunnel.append(tunnel_in)
+        self.tunnels = []
+        self.tunnels.append(tunnel_out)
+        self.tunnels.append(tunnel_in)
         self.clientIP = clientIP
 # REST API for "mac tunnels"
 #
@@ -295,7 +296,12 @@ class GPRSControll(app_manager.RyuApp):
    
             #################
             # gprsns tabulka
-            
+            #TODO:Pre forwardovacie pravidla tabulka #3
+            #TODO:handlovanie BSS_phy_port <-> VGSN_PHY_PORT
+            #TODO: zrusenie PDP contextu
+            #TODO: pridelovanie adries z controlleru
+            #TODO: arp mac adresu internetu
+            #TODO: upratat icmp,arp a sracky okolo generovani paketov
             # ak je to nie je prvy SNDCP fragment pouzivatelskeho packetu, DROP
             match = parser.OFPMatch( sndcp_first_segment=0 )
             actions = [ ] 
@@ -354,7 +360,7 @@ class GPRSControll(app_manager.RyuApp):
     #def switch_features_handler(self, ev):
     #    #TODO: check if this is new switch and add it to list of switches
     #    self.on_inner_dp_join(ev.msg.datapath)
-
+ 
     #@set_ev_cls(ofp_event.EventOFPPortStatus)
     #def vypadok(self, ev):
     #    print('~~~~~~~~~~~~~DEBUG~~~~~~~~~~~~~~~~~~~~~~~~~~')
@@ -395,9 +401,11 @@ class GPRSControll(app_manager.RyuApp):
 
         if match['eth_type'] == 0x0806 and match['arp_op'] == 1:
             LOG.debug("prisiel nam ARP request... ")
-
+            for context in active_contexts:
+                if match['arp_tpa'] == context.clientIP:
+                    reply_mac = context.tunnels[0].TID
             eth = ethernet.ethernet(match['arp_sha'], dp.id, ether.ETH_TYPE_ARP)
-            arp_reply = arp.arp_ip(2, dp.id, match['arp_tpa'], match['arp_sha'], match['arp_spa'])
+            arp_reply = arp.arp_ip(2, reply_mac, match['arp_tpa'], match['arp_sha'], match['arp_spa'])
             LOG.debug("  arp_reply="+pprint.pformat(arp_reply))
 
             pkt = packet.Packet()
@@ -466,6 +474,7 @@ class RestCall(ControllerBase):
         self.id_pool = []
 
     def parse_GET(self, req, cmd):
+        #print(req.query)
         resp = str(cmd)
         args=[]
         result={}
@@ -521,11 +530,10 @@ class RestCall(ControllerBase):
         # do 't' dostaneme tunnel triedy 'tunnels'
         #pri tunely semrom von start -> end
         #pri tunely smerom dnu end -> start
-        #TODO:toto...nieco....fuck
         
         #TODO: Handlovanie 'cmd' hodnoty
         active_contexts.append( PDPContext(bvci, tlli, sapi, nsapi, t_out, t_in, clientIP, ) )
-
+        print(t_out.nodes)
         ############################################Smerom von##############################################################################
         if mirror==0:
             ######Tato cast je pre prvy node v tunely smerom von, pretoze ten musi decapsulovat GPRS-NS aj zmenit MAC adresy################
