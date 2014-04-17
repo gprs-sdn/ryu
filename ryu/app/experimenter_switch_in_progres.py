@@ -435,10 +435,19 @@ class GPRSControll(app_manager.RyuApp):
 
         if match['eth_type'] == 0x0806 and match['arp_op'] == 1:
             LOG.debug("prisiel nam ARP request... ")
-            for context in active_contexts:
-                if match['arp_tpa'] == context.client_ip:
-                    reply_mac = context.tunnels[0].TID
-            eth = ethernet.ethernet(match['arp_sha'], dp.id, ether.ETH_TYPE_ARP)
+            str_hex_dpid = str(hex(dp.id)).rstrip('L').lstrip('0x')
+            #Ak je hex dpid kratsie ako 11 chceme ho zacat '02:'a doplnit nuly 
+            #do celkovej dlzky 12 aby nam z toho nevysla multicastova adresa
+            if len(str_hex_dpid) < 11:
+                reply_mac ='02'
+                for i in range(10-len(str_hex_dpid)):
+                    reply_mac += '0'
+                reply_mac += str_hex_dpid
+            else:
+                reply_mac = dp.id
+
+            LOG.debug('Odpovedam s src_mac: '+reply_mac)
+            eth = ethernet.ethernet(match['arp_sha'], reply_mac, ether.ETH_TYPE_ARP)
             arp_reply = arp.arp_ip(2, reply_mac, match['arp_tpa'], match['arp_sha'], match['arp_spa'])
             LOG.debug("  arp_reply="+pprint.pformat(arp_reply))
 
@@ -656,7 +665,7 @@ class RestCall(ControllerBase):
                 for y in range(2):
                     mac_addr = mac_addr + random.choice(mac_char)
                 mac_addr = mac_addr + ':'
-
+    
             mac_addr = mac_addr[:-1]
             if mac_addr not in self.id_pool:
                 available = 1
