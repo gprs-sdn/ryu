@@ -402,7 +402,9 @@ class GPRSControll(app_manager.RyuApp):
     #def vypadok(self, ev):
     #    print('~~~~~~~~~~~~~DEBUG~~~~~~~~~~~~~~~~~~~~~~~~~~')
  
-    def _ping(self, dp, port_out, ip_src=DISCOVERY_IP_SRC, ip_dst=DISCOVERY_IP_DST,  eth_src='02:b0:00:00:00:b5', eth_dst='02:bb:bb:bb:bb:bb'):
+    def _ping(self, dp, port_out, ip_src=DISCOVERY_IP_SRC, ip_dst=DISCOVERY_IP_DST, 
+              eth_src='02:b0:00:00:00:b5', eth_dst='02:bb:bb:bb:bb:bb',
+              icmp_type=8, icmp_code=0):
         ofp = dp.ofproto
         parser = dp.ofproto_parser
         pkt = packet.Packet()
@@ -414,8 +416,8 @@ class GPRSControll(app_manager.RyuApp):
                                    src=ip_src,
                                    proto=1))
 
-        pkt.add_protocol(icmp.icmp(type_=8,
-                                   code=0,
+        pkt.add_protocol(icmp.icmp(type_=icmp_type,
+                                   code=icmp_code,
                                    csum=0,
                                    data=icmp.echo(1,1,"{'dpid' : "+str(dp.id)+",'port_out' : "+str(port_out)+"}")))
         pkt.serialize()
@@ -439,7 +441,7 @@ class GPRSControll(app_manager.RyuApp):
         if (match['eth_type'] == 0x0800 and match['ip_proto'] == inet.IPPROTO_UDP 
             and match['udp_dst'] == VGSN_PORT and match['sndcp_first_segment'] == 1 
             and match['sndcp_more_segments'] == 1):
-            self._ping(dp,match['in_port'],SNDCP_FRAG_WARNING_SRC_IP,match['ipv4_src'],match['eth_dst'],match['eth_src'])
+            self._ping(dp,match['in_port'],SNDCP_FRAG_WARNING_SRC_IP,match['ipv4_src'],match['eth_dst'],match['eth_src'],icmp_type=3,icmp_code=4)
             LOG.debug('Device with IP: '+match['ipv4_src']+' sent fragmented sndcp packet')
 
         if match['eth_type'] == 0x0806 and match['arp_op'] == 1:
