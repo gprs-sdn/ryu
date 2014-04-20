@@ -178,6 +178,9 @@ BSS_PHY_PORT = 1
 VGSN_PHY_PORT = 2
 INET_PHY_PORT = 3
 
+DISCOVERY_IP_SRC='224.42.42.1'
+DISCOVERY_IP_DST='224.42.42.2'
+SNDCP_FRAG_WARNING_SRC_IP='224.42.42.3'
 GPRS_SDN_EXPERIMENTER = int("0x42", 16)
 OF_GPRS_TABLE = 2
 
@@ -294,7 +297,7 @@ class GPRSControll(app_manager.RyuApp):
         ##########################
         # hlavna flow tabulka (0)
         #Discovery ping (test ipv4_dst=0.0.0.2) ide na controller
-        match = parser.OFPMatch(eth_type=0x0800, ipv4_dst='0.0.0.2')
+        match = parser.OFPMatch(eth_type=0x0800, ipv4_dst=DISCOVERY_IP_DST)
         actions = [ parser.OFPActionOutput(ofp.OFPP_CONTROLLER) ]
         self.add_flow(dp, 100, match, actions) 
 
@@ -345,7 +348,7 @@ class GPRSControll(app_manager.RyuApp):
             
             # ak je to prvy SNDCP fragment packetu s viac ako jednym fragmentom, ICMP a DROP
             match = parser.OFPMatch( sndcp_first_segment=1, sndcp_more_segments=1 )
-            actions = [ ] #TODO: ICMP a drop
+            actions = [parser.OFPActionOutput(ofp.OFPP_CONTROLLER) ] 
             inst = [ parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions) ]
             req = parser.OFPFlowMod(datapath=dp, table_id=OF_GPRS_TABLE, priority=20, match=match, instructions=inst)
             dp.send_msg(req)
@@ -399,16 +402,16 @@ class GPRSControll(app_manager.RyuApp):
     #def vypadok(self, ev):
     #    print('~~~~~~~~~~~~~DEBUG~~~~~~~~~~~~~~~~~~~~~~~~~~')
  
-    def _ping(self, dp, port_out):
+    def _ping(self, dp, port_out, ip_src=DISCOVERY_IP_SRC, ip_dst=DISCOVERY_IP_DST,  eth_src='02:b0:00:00:00:b5', eth_dst='02:bb:bb:bb:bb:bb'):
         ofp = dp.ofproto
         parser = dp.ofproto_parser
         pkt = packet.Packet()
         pkt.add_protocol(ethernet.ethernet(ethertype=0x0800,
-                                           dst='ff:ff:ff:ff:ff:ff',
-                                           src='aa:aa:aa:aa:aa:aa'))
+                                           dst=eth_dst,
+                                           src=eth_src))
 
-        pkt.add_protocol(ipv4.ipv4(dst='0.0.0.2',
-                                   src='0.0.0.1',
+        pkt.add_protocol(ipv4.ipv4(dst=ip_dst,
+                                   src=ip_src,
                                    proto=1))
 
         pkt.add_protocol(icmp.icmp(type_=8,
@@ -432,6 +435,12 @@ class GPRSControll(app_manager.RyuApp):
         ofp = dp.ofproto
         parser = dp.ofproto_parser
         match = ev.msg.match
+
+        if (match['eth_type'] == 0x0800 and match['ip_proto'] == inet.IPPROTO_UDP 
+            and match['udp_dst'] == VGSN_PORT and match['sndcp_first_segment'] == 1 
+            and match['sndcp_more_segments'] == 1):
+            self._ping(dp,match['in_port'],SNDCP_FRAG_WARNING_SRC_IP,match['ipv4_src'],match['eth_dst'],match['eth_src'])
+            LOG.debug('Device with IP: '+match['ipv4_src']+' sent fragmented sndcp packet')
 
         if match['eth_type'] == 0x0806 and match['arp_op'] == 1:
             LOG.debug("prisiel nam ARP request... ")
@@ -459,12 +468,12 @@ class GPRSControll(app_manager.RyuApp):
             out=parser.OFPPacketOut(datapath=dp, buffer_id=ofp.OFP_NO_BUFFER, in_port=ofp.OFPP_CONTROLLER, actions=actions, data=pkt.data)
             dp.send_msg(out)
 
-        if match['eth_type'] == 0x0800 and match['ipv4_dst'] == '0.0.0.2' and match['ip_proto'] == 1:
+        if match['eth_type'] == 0x0800 and match['ipv4_dst'] == DISCOVERY_IP_DST and match['ip_proto'] == 1:
             neighbourDPID=self._get_icmp_data(packet.Packet(array.array('B', ev.msg.data)),'dpid')
             neighbourPort=self._get_icmp_data(packet.Packet(array.array('B', ev.msg.data)),'port_out')
             #print('Som',ev.msg.datapath.id,
             #      ', dostal som spravu na porte: ',ev.msg.match['in_port'], 
-            #      ' od cisla:',nieghbourDPID,
+            #      ' od cisla:',neighbourDPID,
             #      ' ktory ma ma pripojeneho na porte',neighbourPort)
             topo.add_link(ev.msg.datapath.id, neighbourDPID, ev.msg.match['in_port'])
             topo.add_link(neighbourDPID, ev.msg.datapath.id, neighbourPort )
@@ -480,7 +489,7 @@ class GPRSControll(app_manager.RyuApp):
             parser = dp.ofproto_parser
             for var in dp.ports:
                 if var != (ofp.OFPP_CONTROLLER+1):
-                    self._ping(dp,var)
+                    self._ping(dp,var,DISCOVERY_IP_SRC, DISCOVERY_IP_DST)
         if ev.state == handler.DEAD_DISPATCHER:
             for context in active_contexts:
                 print('mam PDP context')
