@@ -199,6 +199,11 @@ VGSN_IP="192.168.27.2"
 VGSN_PORT=23000
 BSS_EDGE_FORWARDER=[0xa]
 INET_EDGE_FORWARDER=[0xc]
+IP_POOL=[]
+for i in range(1,255):
+    IP_POOL.append('172.20.85.'+str(i))
+
+
 class PDPContext:
     def __init__(self, bvci, tlli, sapi, nsapi, tunnel_out, tunnel_in, client_ip, imsi, drx_param):
         self.bvci = bvci
@@ -336,7 +341,6 @@ class GPRSControll(app_manager.RyuApp):
             #TODO:Pre forwardovacie pravidla tabulka #3
             #TODO:handlovanie BSS_phy_port <-> VGSN_PHY_PORT
             #TODO: zrusenie PDP contextu
-            #TODO: pridelovanie adries z controlleru
             #TODO: arp mac adresu internetu
             #TODO: upratat icmp,arp a sracky okolo generovani paketov
             # ak je to nie je prvy SNDCP fragment pouzivatelskeho packetu, DROP
@@ -557,10 +561,20 @@ class RestCall(ControllerBase):
             if value != '':
                 result[str(key)] = str(value)
         req.body=bytes(result)
-        self.mod_pdp(rest_body=req, cmd='add')
-        return (Response(content_type='text', body='{"address":"172.20.85.145","dns1":"8.8.8.8","dns2":"8.8.4.4"}'))
-
-    def mod_pdp (self, rest_body, cmd, mirror = 0, TID=0, mirrorTID=0, t_out=None, t_in=None):
+        
+        #XXX:review, maybe larger ip pool, for now it's enough
+        #TODO:pri deaktivacii CNT vratit IP do poolu
+        if len(IP_POOL) == 0:
+            LOG.error('ERROR: We are out of IP addresses') 
+            return Response(status=500, content_type='text',body='Out of IPs')
+        client_ip=IP_POOL.pop()
+        
+        #TODO:static cmd!!!
+        self.mod_pdp(rest_body=req, cmd='add',_client_ip=client_ip)
+        return (Response(content_type='text/json', body='{"address":'+client_ip+',"dns1":"8.8.8.8","dns2":"8.8.4.4"}'))
+   
+    #TODO:Tento zmutovany potrat funkcie upratat a rozdelit na dve, oddelit vytvaranie tunelov dnu a von!!! uz sa v tom stracam aj ja :D (Martin)
+    def mod_pdp (self, rest_body, cmd, mirror = 0, TID=0, mirrorTID=0, t_out=None, t_in=None, _client_ip=None):
         #vytiahneme parametre z tela REST spravy
         body = ast.literal_eval(rest_body.body)
         pprint.pformat(self)
@@ -575,8 +589,16 @@ class RestCall(ControllerBase):
         drx_param = int(body.get('drx_param'), 16)
         sapi = int(body.get('sapi'))
         nsapi = int(body.get('nsapi'))
-        client_ip = '172.20.85.145'
-        two_way = 'yes'
+        
+        #XXX:review, maybe larger ip pool, for now it's enough
+        #TODO:pri deaktivacii CNT vratit IP do poolu
+        client_ip=_client_ip
+        if _client_ip == None:
+            if len(IP_POOL) == 0:
+                LOG.error('ERROR: We are out of IP addresses') 
+                return Response(status=500, content_type='text',body='Out of IPs')
+            client_ip=IP_POOL.pop()
+     
         if mirror == 0:
             mirrorTID = self.get_mac()
             TID = self.get_mac()
@@ -652,10 +674,10 @@ class RestCall(ControllerBase):
             ###############################################################################################################################
             
         
-        # Ak pride v RESTE 'mirror' : 'yes' na zaciatku sa to ulozi do premennej 'two_way'
         # kontrola na mirror == 0 zabezpecuje aby sa nerekurzovalo donekonecna lebo rekurzivne zavolana funkcia ma mirror == 1
-        if two_way == 'yes' and mirror == 0:     
-            self.mod_pdp(rest_body, cmd, 1, mirrorTID, TID, t_out, t_in)
+        
+        if mirror == 0:     
+            self.mod_pdp(rest_body, cmd, 1, mirrorTID, TID, t_out, t_in, client_ip)
         return (Response(content_type='text', body='{"address":"'+client_ip+'","dns1":"8.8.8.8","dns2":"8.8.4.4"}'))
 
     def add_flow(self, dp, priority, match, actions, table = 0):
