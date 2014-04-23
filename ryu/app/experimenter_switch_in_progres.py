@@ -122,8 +122,8 @@ class topology():
         #XXX:self.add_link(1,0xa,1)
         #XXX:self.add_link(0xa,1,2)
         #internet <-> 0xc
-        self.add_link('internet',0xc,1)
-        self.add_link(0xc,'internet',3)
+        #self.add_link('internet',0xc,1)
+        #self.add_link(0xc,'internet',3)
         self.reload_topology()
 
     def vymaz_tunel(tunelID):
@@ -178,8 +178,9 @@ BSS_PHY_PORT = 1
 VGSN_PHY_PORT = 2
 INET_PHY_PORT = 3
 
-DISCOVERY_IP_SRC='224.42.42.1'
-DISCOVERY_IP_DST='224.42.42.2'
+DISCOVERY_IP_SRC='10.1.1.252'
+DISCOVERY_IP_DST='10.1.1.253'
+DISCOVERY_ARP_IP='10.1.1.254'
 SNDCP_FRAG_WARNING_SRC_IP='224.42.42.3'
 GPRS_SDN_EXPERIMENTER = int("0x42", 16)
 OF_GPRS_TABLE = 2
@@ -200,6 +201,8 @@ VGSN_PORT=23000
 BSS_EDGE_FORWARDER=[0xa]
 INET_EDGE_FORWARDER=[0xc]
 IP_POOL=[]
+APN_POOL={'internet': ''}
+
 for i in range(1,255):
     IP_POOL.append('172.20.85.'+str(i))
 
@@ -282,6 +285,14 @@ class GPRSControll(app_manager.RyuApp):
                        controller=RestCall, action='mod_pdp',
                        conditions=dict(method=['POST']))
         
+        for apn in APN_POOL:
+            try:
+                ip_addr = str(socket.gethostbyname(apn))
+                APN_POOL[apn] = ip_addr
+                LOG.debug('Resolved APN '+apn+' : '+APN_POOL[apn])
+            except socket.gaierror:
+                LOG.warning('Error while resolving apn name "'+apn+'"' )
+
     def on_inner_dp_join(self, dp):
         """ Add new inner (BSS side) forwarder joined our network.
         
@@ -305,6 +316,10 @@ class GPRSControll(app_manager.RyuApp):
         match = parser.OFPMatch(eth_type=0x0800, ipv4_dst=DISCOVERY_IP_DST)
         actions = [ parser.OFPActionOutput(ofp.OFPP_CONTROLLER) ]
         self.add_flow(dp, 100, match, actions) 
+
+        match= parser.OFPMatch(eth_type=0x0806, arp_tpa=DISCOVERY_ARP_IP)
+        actions = [ parser.OFPActionOutput(ofp.OFPP_CONTROLLER)]
+        self.add_flow(dp, 100, match, actions)
 
         if dp.id in INET_EDGE_FORWARDER:
             # send all ARP requests to forwarder
@@ -339,10 +354,10 @@ class GPRSControll(app_manager.RyuApp):
             #################
             # gprsns tabulka
             #TODO:Pre forwardovacie pravidla tabulka #3
-            #TODO:handlovanie BSS_phy_port <-> VGSN_PHY_PORT
+            #TODO: BSS <-> vGSN komunikacia cez tunel!
             #TODO: zrusenie PDP contextu
-            #TODO: arp mac adresu internetu
             #TODO: upratat icmp,arp a sracky okolo generovani paketov
+
             # ak je to nie je prvy SNDCP fragment pouzivatelskeho packetu, DROP
             match = parser.OFPMatch( sndcp_first_segment=0 )
             actions = [ ] 
@@ -406,6 +421,34 @@ class GPRSControll(app_manager.RyuApp):
     #def vypadok(self, ev):
     #    print('~~~~~~~~~~~~~DEBUG~~~~~~~~~~~~~~~~~~~~~~~~~~')
  
+    def _arp(self, dp, port_out, dst_ip):
+        LOG.debug('Forwarder '+str(dp.id)+' ARP searching APN with '+str(dst_ip)+' IP at port '+str(port_out))
+        ofp = dp.ofproto
+        parser = dp.ofproto_parser
+        pkt = packet.Packet()
+        str_hex_dpid = str(hex(dp.id)).rstrip('L').lstrip('0x')
+        #Ak je hex dpid kratsie ako 11 chceme ho zacat '02:'a doplnit nuly
+        #do celkovej dlzky 12 aby nam z toho nevysla multicastova adresa
+        if len(str_hex_dpid) < 11:
+            src_mac ='02'
+            for i in range(10-len(str_hex_dpid)):
+                src_mac += '0'
+            src_mac += str_hex_dpid
+        else:
+            src_mac = dp.id
+       
+        eth = ethernet.ethernet('ff:ff:ff:ff:ff:ff', '00:13:8f:d4:2c:30', ether.ETH_TYPE_ARP)
+        arp_req = arp.arp_ip(1, '00:13:8f:d4:2c:30', DISCOVERY_ARP_IP, '00:00:00:00:00:00', dst_ip)
+
+        pkt = packet.Packet()
+        pkt.add_protocol(eth)
+        pkt.add_protocol(arp_req)
+        pkt.serialize()
+        actions=[parser.OFPActionOutput(port_out)]
+        out=parser.OFPPacketOut(datapath=dp, buffer_id=ofp.OFP_NO_BUFFER, in_port=ofp.OFPP_CONTROLLER, actions=actions, data=pkt.data)
+        dp.send_msg(out)
+
+
     def _ping(self, dp, port_out, ip_src=DISCOVERY_IP_SRC, ip_dst=DISCOVERY_IP_DST, 
               eth_src='02:b0:00:00:00:b5', eth_dst='02:bb:bb:bb:bb:bb',
               icmp_type=8, icmp_code=0):
@@ -446,7 +489,7 @@ class GPRSControll(app_manager.RyuApp):
             and match['udp_dst'] == VGSN_PORT and match['sndcp_first_segment'] == 1 
             and match['sndcp_more_segments'] == 1):
             self._ping(dp,match['in_port'],SNDCP_FRAG_WARNING_SRC_IP,match['ipv4_src'],match['eth_dst'],match['eth_src'],icmp_type=3,icmp_code=4)
-            LOG.debug('Device with IP: '+match['ipv4_src']+' sent fragmented sndcp packet')
+            LOG.warning('WARNING: Device with IP: '+match['ipv4_src']+' sent fragmented sndcp packet')
 
         if match['eth_type'] == 0x0806 and match['arp_op'] == 1:
             LOG.debug("prisiel nam ARP request... ")
@@ -474,6 +517,25 @@ class GPRSControll(app_manager.RyuApp):
             out=parser.OFPPacketOut(datapath=dp, buffer_id=ofp.OFP_NO_BUFFER, in_port=ofp.OFPP_CONTROLLER, actions=actions, data=pkt.data)
             dp.send_msg(out)
 
+        if match['eth_type'] == 0x0806 and match['arp_op'] == 2 and match['arp_tpa'] == DISCOVERY_ARP_IP:
+            pkt = packet.Packet(array.array('B', ev.msg.data))
+            for p in pkt:
+                if p.protocol_name == 'arp':
+                    arp = p        
+            apn_ip = arp.src_ip
+            apn_name = ''
+            dp = ev.msg.datapath.id
+            port = match['in_port']
+
+            for apn in APN_POOL.keys():
+                if APN_POOL.get(apn) == apn_ip:
+                    apn_name = apn
+                    break
+
+            LOG.debug('APN '+str(apn_name)+' found at forwarder '+str(dp)+' at port '+str(port))
+            topo.add_link(dp,str(apn_name),port)
+            topo.add_link(str(apn_name),dp,0)
+            topo.reload_topology
         if match['eth_type'] == 0x0800 and match['ipv4_dst'] == DISCOVERY_IP_DST and match['ip_proto'] == 1:
             neighbourDPID=self._get_icmp_data(packet.Packet(array.array('B', ev.msg.data)),'dpid')
             neighbourPort=self._get_icmp_data(packet.Packet(array.array('B', ev.msg.data)),'port_out')
@@ -484,18 +546,21 @@ class GPRSControll(app_manager.RyuApp):
             topo.add_link(ev.msg.datapath.id, neighbourDPID, ev.msg.match['in_port'])
             topo.add_link(neighbourDPID, ev.msg.datapath.id, neighbourPort )
             topo.reload_topology()
-            LOG.debug('Topology changed')
+            LOG.debug('Topology changed: link between '+str(ev.msg.datapath.id)+' and '+str(neighbourDPID)+' is up.')
 
     @set_ev_cls(ofp_event.EventOFPStateChange)
-    def switch_woke_up(self, ev):
+    def forwarder_state_changed(self, ev):
         if ev.state == handler.MAIN_DISPATCHER:
             self.on_inner_dp_join(ev.datapath)
             dp = ev.datapath
             ofp = dp.ofproto
             parser = dp.ofproto_parser
-            for var in dp.ports:
-                if var != (ofp.OFPP_CONTROLLER+1):
-                    self._ping(dp,var,DISCOVERY_IP_SRC, DISCOVERY_IP_DST)
+            for port in dp.ports:
+                if port != (ofp.OFPP_CONTROLLER+1):
+                    self._ping(dp,port,DISCOVERY_IP_SRC, DISCOVERY_IP_DST)
+                    for apn_ip in APN_POOL.values():
+                        self._arp(dp,port,apn_ip)
+
         if ev.state == handler.DEAD_DISPATCHER:
             for context in active_contexts:
                 print('mam PDP context')
@@ -511,8 +576,8 @@ class GPRSControll(app_manager.RyuApp):
             if p.protocol_name == 'icmp':
                 for char in p.data.data:
                     payload+=(chr(char))
-        slovnik = ast.literal_eval(payload.rstrip('\0'))
-        return(slovnik.get(req))
+        dictionary = ast.literal_eval(payload.rstrip('\0'))
+        return(dictionary.get(req))
 
 
     def add_flow(self, dp, priority, match, actions):
