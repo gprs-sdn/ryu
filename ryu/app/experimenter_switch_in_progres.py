@@ -180,7 +180,7 @@ INET_PHY_PORT = 3
 
 DISCOVERY_IP_SRC='10.1.1.252'
 DISCOVERY_IP_DST='10.1.1.253'
-DISCOVERY_ARP_IP='10.1.1.254'
+DISCOVERY_ARP_IP='170.20.255.123'
 SNDCP_FRAG_WARNING_SRC_IP='224.42.42.3'
 GPRS_SDN_EXPERIMENTER = int("0x42", 16)
 OF_GPRS_TABLE = 2
@@ -519,10 +519,11 @@ class GPRSControll(app_manager.RyuApp):
 
         if match['eth_type'] == 0x0806 and match['arp_op'] == 2 and match['arp_tpa'] == DISCOVERY_ARP_IP:
             pkt = packet.Packet(array.array('B', ev.msg.data))
+            arp_data=''
             for p in pkt:
                 if p.protocol_name == 'arp':
-                    arp = p        
-            apn_ip = arp.src_ip
+                    arp_data = p        
+            apn_ip = arp_data.src_ip
             apn_name = ''
             dp = ev.msg.datapath.id
             port = match['in_port']
@@ -632,11 +633,11 @@ class RestCall(ControllerBase):
         if len(IP_POOL) == 0:
             LOG.error('ERROR: We are out of IP addresses') 
             return Response(status=500, content_type='text',body='Out of IPs')
-        client_ip=IP_POOL.pop()
+        client_ip=str(IP_POOL.pop())
         
         #TODO:static cmd!!!
         self.mod_pdp(rest_body=req, cmd='add',_client_ip=client_ip)
-        return (Response(content_type='text/json', body='{"address":'+client_ip+',"dns1":"8.8.8.8","dns2":"8.8.4.4"}'))
+        return (Response(content_type='text/json', body='{"address": "'+client_ip+'", "dns1":"8.8.8.8", "dns2":"8.8.4.4"}'))
    
     #TODO:Tento zmutovany potrat funkcie upratat a rozdelit na dve, oddelit vytvaranie tunelov dnu a von!!! uz sa v tom stracam aj ja :D (Martin)
     def mod_pdp (self, rest_body, cmd, mirror = 0, TID=0, mirrorTID=0, t_out=None, t_in=None, _client_ip=None):
