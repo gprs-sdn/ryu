@@ -533,10 +533,11 @@ class GPRSControll(app_manager.RyuApp):
                     apn_name = apn
                     break
 
-            LOG.debug('APN '+str(apn_name)+' found at forwarder '+str(dp)+' at port '+str(port))
             topo.add_link(dp,str(apn_name),port)
             topo.add_link(str(apn_name),dp,0)
-            topo.reload_topology
+            topo.reload_topology()
+            LOG.debug('APN '+str(apn_name)+' found at forwarder '+str(dp)+' at port '+str(port))
+        
         if match['eth_type'] == 0x0800 and match['ipv4_dst'] == DISCOVERY_IP_DST and match['ip_proto'] == 1:
             neighbourDPID=self._get_icmp_data(packet.Packet(array.array('B', ev.msg.data)),'dpid')
             neighbourPort=self._get_icmp_data(packet.Packet(array.array('B', ev.msg.data)),'port_out')
