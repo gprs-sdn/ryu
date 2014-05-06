@@ -736,9 +736,10 @@ class GPRSControll(app_manager.RyuApp):
             for port in dp.ports:
                 if port != (ofp.OFPP_CONTROLLER):
                     _icmp_send(dp,port,DISCOVERY_IP_SRC, DISCOVERY_IP_DST)
-                    for apn in APN_POOL:                  
-                        LOG.debug('Forwarder '+str(dp.id)+' ARP searching APN with '+str(apn.ip_addr)+' IP at port '+str(port))
-                        _arp_send(dp=dp, port_out=port, arp_code=1, ip_target=apn.ip_addr, ip_sender=DISCOVERY_ARP_IP)
+                    for apn in APN_POOL:
+                    	if apn.ip_addr != None:
+                            LOG.debug('Forwarder '+str(dp.id)+' ARP searching APN with '+str(apn.ip_addr)+' IP at port '+str(port))
+                            _arp_send(dp=dp, port_out=port, arp_code=1, ip_target=apn.ip_addr, ip_sender=DISCOVERY_ARP_IP)
 
         ##TODO: Forwarder got disconnected!
         if ev.state == handler.DEAD_DISPATCHER:
