@@ -546,7 +546,7 @@ class GPRSControll(app_manager.RyuApp):
        
         ## Networks self-discovery using icmp messages
         ## Redirect all pings with ipv4_dst=DISCOVERY_IP_DST to controller
-        match = parser.OFPMatch(eth_type=0x0800, ipv4_dst=DISCOVERY_IP_DST)
+        match = parser.OFPMatch(eth_type=0x0800, ip_proto=1, icmpv4_type=8, icmpv4_code=0, ipv4_dst=DISCOVERY_IP_DST)
         actions = [ parser.OFPActionOutput(ofp.OFPP_CONTROLLER) ]
         self.add_flow(dp, 100, match, actions) 
 
