@@ -49,7 +49,7 @@ INET_PHY_PORT = None
 DISCOVERY_IP_SRC='10.1.1.252'
 DISCOVERY_IP_DST='10.1.1.253'
 ##Due to nature of ARP protocol, DISCOVERY_ARP_IP must be in same subnet as host you want to discover
-DISCOVERY_ARP_IP='170.20.255.99'
+DISCOVERY_ARP_IP='172.20.255.99'
 SNDCP_FRAG_WARNING_SRC_IP='224.42.42.3'
 
 ##Experimenter ID (self-assigned)
@@ -500,7 +500,7 @@ class GPRSControll(app_manager.RyuApp):
                     apn.ip_addr = ip_addr
                     LOG.debug('Resolved APN '+apn.name+' : '+apn.ip_addr)
                 except socket.gaierror:
-                    LOG.warning('Error while resolving apn name "'+apn+'"' )
+                    LOG.warning('Error while resolving apn name "'+apn.name+'"' )
 
    
     def on_edge_inet_dp_join(self, dp, port):
