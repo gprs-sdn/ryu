@@ -19,6 +19,7 @@ from ryu.app.wsgi import ControllerBase, WSGIApplication
 from webob import Response
 from webob import Request
 from cgi import parse_qs
+from networkx.readwrite import json_graph
 import struct
 import sys
 import logging
@@ -88,6 +89,7 @@ APN_POOL=[]
 ##List of BSSs in network
 #XXX:for now it's static
 BSS_POOL=['901-70-1-0']
+#BSS_POOL=['231-1-1-0']
 
 ##List of active PDP CNTs
 active_contexts = []
@@ -214,6 +216,11 @@ class topology():
         #self.add_link('internet',0xc,1)
         #self.add_link(0xc,'internet',3)
         self.reload_topology()
+
+    def dump(self):
+        #data = json_graph.tree_data(self.DynamicGraph,root=1)
+        #return json.dumps(data)
+        return nx.readwrite.json_graph.dumps(self.DynamicGraph)
 
     def vymaz_tunel(tunelID):
         for hrana in ((u,v) for u,v,d in DynamicGraph.edges_iter(data=True) if tunelID in d['tunely']):
@@ -485,11 +492,18 @@ class GPRSControll(app_manager.RyuApp):
                        controller=RestCall, action='info',
                        conditions=dict(method=['GET']))
 
+
         uri = path + '/pdp/{cmd}'
         mapper.connect('stats',uri,
                        controller=RestCall, action='mod_pdp',
                        conditions=dict(method=['GET']))
-        
+
+        uri = '/topology/dump'
+        mapper.connect('stats',uri,
+                       controller=RestCall, action='dump_topology',
+                       conditions=dict(method=['GET']))
+
+       
 
         ## DNS ressolution of IP address of PDP CNTs if it's not already defined
         ## !!! MAKE SURE you have valid DNS entry available in /etc/hosts or DNS server !!!
@@ -737,7 +751,7 @@ class GPRSControll(app_manager.RyuApp):
                 if port != (ofp.OFPP_CONTROLLER):
                     _icmp_send(dp,port,DISCOVERY_IP_SRC, DISCOVERY_IP_DST)
                     for apn in APN_POOL:
-                    	if apn.ip_addr != None:
+                        if apn.ip_addr != None:
                             LOG.debug('Forwarder '+str(dp.id)+' ARP searching APN with '+str(apn.ip_addr)+' IP at port '+str(port))
                             _arp_send(dp=dp, port_out=port, arp_code=1, ip_target=apn.ip_addr, ip_sender=DISCOVERY_ARP_IP)
 
@@ -919,6 +933,9 @@ class RestCall(ControllerBase):
         self.dpset = data['dpset']
         self.waiters = data['waiters']
 
+    def dump_topology (self, req):
+        return (Response(content_type='application/json', body=topo.dump()))
+
     def mod_pdp (self, req, cmd):
         #parsing GET parameters out of REST call
         body = urlparse.parse_qs(cmd)
@@ -995,7 +1012,7 @@ class RestCall(ControllerBase):
         dp.send_msg(req)
      
         dp = self.dpset.get(path_in[-1].dpid)
-	parser = dp.ofproto_parser
+        parser = dp.ofproto_parser
         ofp = dp.ofproto
         
         ##XXX:Setfield eth_dst is ahrdcoded to work with our BTS!
@@ -1011,7 +1028,7 @@ class RestCall(ControllerBase):
         req = parser.OFPFlowMod(datapath=dp, priority=100, match=match, instructions=inst, table_id = OF_GPRS_TABLE_IN)
         dp.send_msg(req)
 
-        return (Response(content_type='application/json', body='{"address":"'+client_ip+'","dns1":"8.8.8.8","dns2":"8.8.4.4"}'))
+        return (Response(content_type='application/json', body='{"address":"'+client_ip+'","dns1":"8.8.8.8","dns2":"8.8.8.8"}'))
 
     def add_flow(self, dp, priority, match, actions, table = 0):
         ofp = dp.ofproto
