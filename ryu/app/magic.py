@@ -3,7 +3,7 @@ from ryu.ofproto import ofproto_v1_3_parser
 from ryu.controller import ofp_event
 from ryu.controller import dpset
 from ryu.controller import handler
-from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
+from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER, DEAD_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
 from ryu.ofproto import ofproto_v1_3_parser
@@ -93,7 +93,7 @@ BSS_POOL=['901-70-1-0']
 #BSS_POOL=['231-1-1-0']
 
 ##List of active PDP CNTs
-active_contexts = []
+ACTIVE_CONTEXTS = []
 
 ##List of active tunnels
 ACTIVE_TUNNELS=[]
@@ -228,6 +228,11 @@ class topology():
 
     def add_forwarder(self, fwID):
         self.StaticGraph.add_node(fwID)
+
+    def del_forwarder(self, fwID):
+        for link in self.DynamicGraph.edges():
+            if fwID in link:
+                self.DynamicGraph.remove_edge(link[0],link[1])
 
     def add_link(self, fwID1, fwID2, ifnumm):
         self.StaticGraph.add_edge(fwID1, fwID2, interf=ifnumm, tunely=[])
@@ -730,23 +735,23 @@ class GPRSControll(app_manager.RyuApp):
             ##retry to create inactive tunnels/find better paths for already active tunnels
             self.retry_tunnels()
         return
-    
-    @set_ev_cls(ofp_event.EventOFPStateChange)
+
+    @set_ev_cls(dpset.EventDP, [MAIN_DISPATCHER, DEAD_DISPATCHER])
     def forwarder_state_changed(self, ev):
         """
         This method handles change of forwarders state
 
-        ev.state == handler.MAIN_DISPATCHER  -- New forwarder is connected
-        ev.state == handler.DEAD_DISPATCHER  -- Forwarder got disconnected  
+        ev.enter is True   -- New forwarder is connected
+        ev.enter is False  -- Forwarder got disconnected  
         """
-
-        if ev.state == handler.MAIN_DISPATCHER:
-            self.on_inner_dp_join(ev.datapath)
-            dp = ev.datapath
-            ofp = dp.ofproto
-            parser = dp.ofproto_parser
+        self.on_inner_dp_join(ev.dp)
+        dp = ev.dp
+        ofp = dp.ofproto
+        parser = dp.ofproto_parser
             
-            ##For evry new forwarder we send out discovery ICMP packets out of every port except OFPP_CONTROLLER
+
+        if ev.enter is True:
+        ##For evry new forwarder we send out discovery ICMP packets out of every port except OFPP_CONTROLLER
             for port in dp.ports:
                 if port != (ofp.OFPP_CONTROLLER):
                     _icmp_send(dp,port,DISCOVERY_IP_SRC, DISCOVERY_IP_DST)
@@ -755,14 +760,10 @@ class GPRSControll(app_manager.RyuApp):
                             LOG.debug('Forwarder '+str(dp.id)+' ARP searching APN with '+str(apn.ip_addr)+' IP at port '+str(port))
                             _arp_send(dp=dp, port_out=port, arp_code=1, ip_target=apn.ip_addr, ip_sender=DISCOVERY_ARP_IP)
 
-        ##TODO: Forwarder got disconnected!
-        if ev.state == handler.DEAD_DISPATCHER:
-            for context in active_contexts:
-                print('mam PDP context')
-                for tunnel in context.tunnel:
-                    for links in tunnel:
-                        print('node: ',link.dpid)
-            print('##################################################################')
+        if ev.enter is False:
+	    ##TODO: We need to scan if any tunnels were affected, and if so, if any PDP COntexts were affected
+            ##JUST REMOVING NODE FROM TOPOLOGY ISNT ENOUGH!
+            topo.del_forwarder(dp.id)
 
 
     def retry_tunnels(self):
@@ -973,7 +974,7 @@ class RestCall(ControllerBase):
         client_ip=IP_POOL.pop()
      
         #TODO: Handling of 'cmd' value
-        active_contexts.append( PDPContext(bvci, tlli, sapi, nsapi, tid_out, tid_in, client_ip, imsi, drx_param) )
+        ACTIVE_CONTEXTS.append( PDPContext(bvci, tlli, sapi, nsapi, tid_out, tid_in, client_ip, imsi, drx_param) )
         
         ###WAY OUT
         ##First node on the way OUT removes GPRS headers, sets eth addr. to appropriate tunnel ID
