@@ -19,11 +19,12 @@ from ryu.app.wsgi import ControllerBase, WSGIApplication
 from webob import Response
 from webob import Request
 from cgi import parse_qs
-from networkx.readwrite import json_graph
+#from networkx.readwrite import json_graph
 import struct
 import sys
 import logging
 import networkx as nx
+from networkx.readwrite import json_graph
 import json
 import random
 import socket
@@ -218,9 +219,8 @@ class topology():
         self.reload_topology()
 
     def dump(self):
-        #data = json_graph.tree_data(self.DynamicGraph,root=1)
-        #return json.dumps(data)
-        return nx.readwrite.json_graph.dumps(self.DynamicGraph)
+	data = json_graph.node_link_data(self.DynamicGraph)
+	return json.dumps(data)
 
     def vymaz_tunel(tunelID):
         for hrana in ((u,v) for u,v,d in DynamicGraph.edges_iter(data=True) if tunelID in d['tunely']):
