@@ -34,6 +34,7 @@ import inspect
 import pprint
 import time
 import urlparse
+import datetime
 
 ###Global variable initialization
 
@@ -508,7 +509,11 @@ class GPRSControll(app_manager.RyuApp):
                        controller=RestCall, action='dump_topology',
                        conditions=dict(method=['GET']))
 
-       
+        #Testing
+        uri =  '/test/info'
+        mapper.connect('stats', uri,
+                        controller=RestCall, action='test_info',
+                        conditions=dict(method=['GET']))       
 
         ## DNS ressolution of IP address of PDP CNTs if it's not already defined
         ## !!! MAKE SURE you have valid DNS entry available in /etc/hosts or DNS server !!!
@@ -556,8 +561,12 @@ class GPRSControll(app_manager.RyuApp):
         parser = dp.ofproto_parser
         
         #Deletion of already existing OF flows
+        LOG.debug('Deleting flow table configuration of newly added forwarder ID: ' + str(dp.id) )
         dp.send_msg(parser.OFPFlowMod(datapath=dp, command=ofp.OFPFC_DELETE))
         dp.send_msg(parser.OFPFlowMod(datapath=dp, command=ofp.OFPFC_DELETE, table_id=OF_GPRS_TABLE))
+        #TODO: Shall we wipe-out OFconfig data as well?
+
+
 
         ##########################
         ## Main table (0)
@@ -565,20 +574,25 @@ class GPRSControll(app_manager.RyuApp):
        
         ## Networks self-discovery using icmp messages
         ## Redirect all pings with ipv4_dst=DISCOVERY_IP_DST to controller
+        LOG.debug('Installing ICMP topology discovery flows on forwarder ID: ' + str(dp.id))       
         match = parser.OFPMatch(eth_type=0x0800, ip_proto=1, icmpv4_type=8, icmpv4_code=0, ipv4_dst=DISCOVERY_IP_DST)
         actions = [ parser.OFPActionOutput(ofp.OFPP_CONTROLLER) ]
-        self.add_flow(dp, 100, match, actions) 
-
+        self.add_flow(dp, 100, match, actions)
+         
         ##Controller uses ARP to resolve mac_addresses of APNs
         ##All arp replies with target IP of DISCOVERY_ARP_IP are redirected to controller
+        LOG.debug('Installing ARP APN discovery flows on forwarder ID: ' + str(dp.id))
         match= parser.OFPMatch(eth_type=0x0806, arp_op=2, arp_tpa=DISCOVERY_ARP_IP)
         actions = [ parser.OFPActionOutput(ofp.OFPP_CONTROLLER)]
         self.add_flow(dp, 100, match, actions)
+
  
+
         ##Following rules are applied only on forwarders bellonging to BSS_EDGE_FORWARDER group
         ##Rules are applied based on priority of match (highest priority first)
         if dp.id in BSS_EDGE_FORWARDER:
-
+            
+            LOG.debug('Forwarder ID: ' + str(dp.id) + ' is an access edge forwarder, installing aditional rules')
             ## UDP 23000 is GPRS-NS and all packets that match this are forwarded to OF_GPRS_TABLE flow table
             inst = [ parser.OFPInstructionGotoTable(OF_GPRS_TABLE) ]
             match = parser.OFPMatch(eth_type=0x0800,ip_proto=inet.IPPROTO_UDP, udp_dst=VGSN_PORT)
@@ -693,6 +707,7 @@ class GPRSControll(app_manager.RyuApp):
 
         ##ARP response with target_ip==DISCOVERY_ARP_IP recieved - we found APN
         if match['eth_type'] == 0x0806 and match['arp_op'] == 2 and match['arp_tpa'] == DISCOVERY_ARP_IP:
+            LOG.debug('ARP response with APN discovery IP recieved at controller')
             pkt = packet.Packet(array.array('B', ev.msg.data))
             arp_pkt=pkt.get_protocol(arp.arp)
             apn_ip = arp_pkt.src_ip
@@ -718,6 +733,7 @@ class GPRSControll(app_manager.RyuApp):
 
         ##ICMP echo with dst_ip==DISCOVERY_IP_DST recieved - new link between forwarders is up
         if match['eth_type'] == 0x0800 and match['ipv4_dst'] == DISCOVERY_IP_DST and match['ip_proto'] == 1:
+            LOG.debug('ICMP echo recieved at controller')
             pkt = packet.Packet(array.array('B', ev.msg.data))
 
             ##Discovery pings carry information about sending datapath in payload of icmp packet
@@ -730,7 +746,7 @@ class GPRSControll(app_manager.RyuApp):
             topo.add_link(ev.msg.datapath.id, neighbourDPID, ev.msg.match['in_port'])
             topo.add_link(neighbourDPID, ev.msg.datapath.id, neighbourPort )
             topo.reload_topology()
-            LOG.debug('Topology changed: link between '+str(ev.msg.datapath.id)+' and '+str(neighbourDPID)+' is up.')
+            LOG.debug('Topology changed: New link between '+str(ev.msg.datapath.id)+' and '+str(neighbourDPID)+' was discovered.')
 
             ##retry to create inactive tunnels/find better paths for already active tunnels
             self.retry_tunnels()
@@ -744,7 +760,10 @@ class GPRSControll(app_manager.RyuApp):
         ev.enter is True   -- New forwarder is connected
         ev.enter is False  -- Forwarder got disconnected  
         """
+
+        #ToBeDiscussed, should be fired only on newly connected forwarders, not on those who are leaving...
         self.on_inner_dp_join(ev.dp)
+
         dp = ev.dp
         ofp = dp.ofproto
         parser = dp.ofproto_parser
@@ -752,17 +771,20 @@ class GPRSControll(app_manager.RyuApp):
 
         if ev.enter is True:
         ##For evry new forwarder we send out discovery ICMP packets out of every port except OFPP_CONTROLLER
+            LOG.debug('Forwarder ID: ' + str(dp.id) + ' saying hello to Unifycore Controller, Unifycore warmly welcomes you!')
             for port in dp.ports:
                 if port != (ofp.OFPP_CONTROLLER):
+                    LOG.debug('Controller is sending topology discovery ICMPs to ' + str(dp.id))
                     _icmp_send(dp,port,DISCOVERY_IP_SRC, DISCOVERY_IP_DST)
                     for apn in APN_POOL:
                         if apn.ip_addr != None:
-                            LOG.debug('Forwarder '+str(dp.id)+' ARP searching APN with '+str(apn.ip_addr)+' IP at port '+str(port))
+                            LOG.debug('Forwarder ID: '+str(dp.id)+' ARP searching APN with '+str(apn.ip_addr)+' IP at port '+str(port))
                             _arp_send(dp=dp, port_out=port, arp_code=1, ip_target=apn.ip_addr, ip_sender=DISCOVERY_ARP_IP)
 
         if ev.enter is False:
 	    ##TODO: We need to scan if any tunnels were affected, and if so, if any PDP COntexts were affected
             ##JUST REMOVING NODE FROM TOPOLOGY ISNT ENOUGH!
+            LOG.debug('Forwarder ID: ' + str(dp.id) + 'is leaving topology. It was a pleasure for us!')
             topo.del_forwarder(dp.id)
 
 
@@ -933,6 +955,38 @@ class RestCall(ControllerBase):
         super(RestCall, self).__init__(req, link, data, **config)
         self.dpset = data['dpset']
         self.waiters = data['waiters']
+
+    #Testing
+    def test_info(self,req):
+        global dpset
+        response = '<H1>Topology status DUMP</H1> </BR>'
+        response += '<B>Dump created on: </B> ' + str(datetime.datetime.now()) + '</BR></BR>'
+        response += '<B>BSS edge forwarders list(decimal values):      </B> ' + str(BSS_EDGE_FORWARDER) + '</BR>'
+        response += '<B>Internet edge forwarders list(decimal values): </B> ' + str(INET_EDGE_FORWARDER) + '</BR>'
+        response += '<B>Active tunnels:   </B>' + str(ACTIVE_TUNNELS) + '</BR>'
+        response += '<B>Inactive tunnels: </B>' + str(INACTIVE_TUNNELS) + '</BR>'
+        response += '<B>Static topology graph:  </B>' + str(topo.StaticGraph.nodes()) + '</BR>'
+        response += '<B>Dynamic topology graph: </B>' + str(topo.DynamicGraph.nodes()) + '</BR>'
+
+
+
+        if BSS_EDGE_FORWARDER and INET_EDGE_FORWARDER and topo.StaticGraph.number_of_nodes() and topo.DynamicGraph.number_of_nodes():
+            response += '<H1 style="color:green"> TOPOLOGY HEALTHY! </H1>'
+        else:
+            response += '<H1 style="color:red"> TOPOLOGT NOT HEALTHY </H1>'
+
+
+        if ACTIVE_TUNNELS or INACTIVE_TUNNELS:
+            response += '<H2 style="color:green"> USER-PLANE TUNNELS ARE PRESENT </H2>'
+        else:
+            response += '<H2 style="color:orange"> USER-PLANE TUNNELS NOT PRESENT </H2>'
+
+
+
+
+        
+        LOG.debug('Topology status dumped!')
+        return (response)
 
     def dump_topology (self, req):
         return (Response(content_type='application/json', body=topo.dump()))
