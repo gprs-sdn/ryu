@@ -542,6 +542,8 @@ class GPRSControll(app_manager.RyuApp):
         parser = dp.ofproto_parser
 
         ##All ARP requests that come from APN are forwarded to Controller which then handle them
+        ##TODO: Pass also APN object so we can put it to debug log :)
+        LOG.debug('TOPO MNGR: Redirecting all ARP req from APN to controller by OFrule on forwarder: ' + str(dp.id))
         match = parser.OFPMatch(in_port=port, eth_type=0x0806, arp_op=1)
         actions = [ parser.OFPActionOutput(ofp.OFPP_CONTROLLER) ]
         inst = [ parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions) ]
@@ -577,14 +579,14 @@ class GPRSControll(app_manager.RyuApp):
        
         ## Networks self-discovery using icmp messages
         ## Redirect all pings with ipv4_dst=DISCOVERY_IP_DST to controller
-        LOG.debug('TOPO MNGR: Installing ICMP topology discovery flows on forwarder ID: ' + str(dp.id))       
+        LOG.debug('TOPO MNGR: Installing ICMP topology discovery flows on forwarder: ' + str(dp.id))       
         match = parser.OFPMatch(eth_type=0x0800, ip_proto=1, icmpv4_type=8, icmpv4_code=0, ipv4_dst=DISCOVERY_IP_DST)
         actions = [ parser.OFPActionOutput(ofp.OFPP_CONTROLLER) ]
         self.add_flow(dp, 100, match, actions)
          
         ##Controller uses ARP to resolve mac_addresses of APNs
         ##All arp replies with target IP of DISCOVERY_ARP_IP are redirected to controller
-        LOG.debug('TOPO MNGR: Installing ARP APN discovery flows on forwarder ID: ' + str(dp.id))
+        LOG.debug('TOPO MNGR: Installing ARP APN discovery flows on forwarder: ' + str(dp.id))
         match= parser.OFPMatch(eth_type=0x0806, arp_op=2, arp_tpa=DISCOVERY_ARP_IP)
         actions = [ parser.OFPActionOutput(ofp.OFPP_CONTROLLER)]
         self.add_flow(dp, 100, match, actions)
@@ -595,7 +597,7 @@ class GPRSControll(app_manager.RyuApp):
         ##Rules are applied based on priority of match (highest priority first)
         if dp.id in BSS_EDGE_FORWARDER:
             
-            LOG.debug('TOPO MNGR: Forwarder ID: ' + str(dp.id) + ' is an access edge forwarder, installing aditional rules')
+            LOG.debug('TOPO MNGR: Forwarder: ' + str(dp.id) + ' is an access edge forwarder, installing aditional rules')
             ## UDP 23000 is GPRS-NS and all packets that match this are forwarded to OF_GPRS_TABLE flow table
             inst = [ parser.OFPInstructionGotoTable(OF_GPRS_TABLE) ]
             match = parser.OFPMatch(eth_type=0x0800,ip_proto=inet.IPPROTO_UDP, udp_dst=VGSN_PORT)
@@ -710,7 +712,7 @@ class GPRSControll(app_manager.RyuApp):
 
         ##ARP response with target_ip==DISCOVERY_ARP_IP recieved - we found APN
         if match['eth_type'] == 0x0806 and match['arp_op'] == 2 and match['arp_tpa'] == DISCOVERY_ARP_IP:
-            LOG.debug('TOPO MNGR: ARP response with APN discovery IP recieved at controller')
+            LOG.debug('TOPO MNGR: ARP response with target APN discovery IP recieved at controller, processing for APN extraction')
             pkt = packet.Packet(array.array('B', ev.msg.data))
             arp_pkt=pkt.get_protocol(arp.arp)
             apn_ip = arp_pkt.src_ip
@@ -724,7 +726,7 @@ class GPRSControll(app_manager.RyuApp):
                     topo.add_link(dp.id,str(apn.name),port)
                     topo.add_link(str(apn.name),dp.id,0)
                     topo.reload_topology()
-                    LOG.debug('APN '+str(apn.name)+' found at forwarder '+str(dp.id)+' at port '+str(port))
+                    LOG.debug('TOPO MNGR: APN '+str(apn.name)+' found at forwarder: '+str(dp.id)+', port: '+str(port) + ' by ARP search')
                     
                     ##Add special rules to edge forwarder
                     self.on_edge_inet_dp_join(dp, port)  
@@ -736,7 +738,7 @@ class GPRSControll(app_manager.RyuApp):
 
         ##ICMP echo with dst_ip==DISCOVERY_IP_DST recieved - new link between forwarders is up
         if match['eth_type'] == 0x0800 and match['ipv4_dst'] == DISCOVERY_IP_DST and match['ip_proto'] == 1:
-            LOG.debug('TOPO MNGR: ICMP echo recieved at controller')
+            LOG.debug('TOPO MNGR: ICMP echo recieved at controller, processing for link extraction')
             pkt = packet.Packet(array.array('B', ev.msg.data))
 
             ##Discovery pings carry information about sending datapath in payload of icmp packet
@@ -774,20 +776,20 @@ class GPRSControll(app_manager.RyuApp):
 
         if ev.enter is True:
         ##For evry new forwarder we send out discovery ICMP packets out of every port except OFPP_CONTROLLER
-            LOG.debug('TOPO MNGR: Forwarder ID: ' + str(dp.id) + ' saying hello to Unifycore Controller, Unifycore warmly welcomes you!')
+            LOG.debug('TOPO MNGR: Forwarder: ' + str(dp.id) + ' saying hello to Unifycore Controller, Unifycore warmly welcomes you!')
             for port in dp.ports:
                 if port != (ofp.OFPP_CONTROLLER):
-                    LOG.debug('TOPO MNGR: Controller is sending topology discovery ICMPs to ' + str(dp.id))
+                    LOG.debug('TOPO MNGR: Controller is sending topology discovery ICMPs to forwarder: ' + str(dp.id) + ', port: ' + str(port))
                     _icmp_send(dp,port,DISCOVERY_IP_SRC, DISCOVERY_IP_DST)
                     for apn in APN_POOL:
                         if apn.ip_addr != None:
-                            LOG.debug('TOPO MNGR: Forwarder ID: '+str(dp.id)+' ARP searching APN with '+str(apn.ip_addr)+' IP at port '+str(port))
+                            LOG.debug('TOPO MNGR: Forwarder: '+str(dp.id)+', port: '+ str(port)   + ' is looking for APN: ' + str(apn.name) +' at IP: '+str(apn.ip_addr)+' with ARP search')
                             _arp_send(dp=dp, port_out=port, arp_code=1, ip_target=apn.ip_addr, ip_sender=DISCOVERY_ARP_IP)
 
         if ev.enter is False:
 	    ##TODO: We need to scan if any tunnels were affected, and if so, if any PDP COntexts were affected
             ##JUST REMOVING NODE FROM TOPOLOGY ISNT ENOUGH!
-            LOG.debug('TOPO MNGR: Forwarder ID: ' + str(dp.id) + ' is leaving topology. It was a pleasure for us!')
+            LOG.debug('TOPO MNGR: Forwarder: ' + str(dp.id) + ' is leaving topology. It was a pleasure for us!')
             topo.del_forwarder(dp.id)
 
 
@@ -806,7 +808,7 @@ class GPRSControll(app_manager.RyuApp):
             except nx.NetworkXNoPath:
                 LOG.warning("Warning: Couldn't find path, network might not be converged yet. Retrying when next forwarder joins network...again...")
                 return
-
+            
             INACTIVE_TUNNELS.remove(inact_tunnel)
 
             ##Set forwarding rules for all but last forwarder on the way OUT 
@@ -857,7 +859,7 @@ class GPRSControll(app_manager.RyuApp):
             dp.send_msg(req)
 
             ACTIVE_TUNNELS.append(tunnel(inact_tunnel.bss, inact_tunnel.apn, self.tid_out, self.tid_in, self.path_out, self.path_in))
-            LOG.debug('Found path for inactive tunnel between '+str(inact_tunnel.bss)+' and '+str(inact_tunnel.apn.name))
+            LOG.debug('TOPO MNGR: Inactive tunnel between ' + str(inact_tunnel.bss) + ' and ' + str(inact_tunnel.apn.name) +' put into active state!')
 
 
 
@@ -937,7 +939,7 @@ class GPRSControll(app_manager.RyuApp):
         dp.send_msg(req)
 
         ACTIVE_TUNNELS.append(tunnel(self.bss,self.apn, self.tid_out, self.tid_in, self.path_out, self.path_in))
-        LOG.debug('Found path for tunnel between '+str(self.bss)+' and '+str(self.apn.name))
+        LOG.debug('Tunnel between '+str(self.bss)+' and '+str(self.apn.name) + 'was set up.')
        
 
     def add_flow(self, dp, priority, match, actions, table=0):
@@ -966,8 +968,28 @@ class RestCall(ControllerBase):
         response += '<B>Dump created on: </B> ' + str(datetime.datetime.now())
         response += '</BR></BR><B>BSS edge forwarders list(decimal values):      </B> ' + str(BSS_EDGE_FORWARDER)
         response +=      '</BR><B>Internet edge forwarders list(decimal values): </B> ' + str(INET_EDGE_FORWARDER)
-        response +=      '</BR><B>Active tunnels:   </B>' + str(ACTIVE_TUNNELS)
-        response +=      '</BR><B>Inactive tunnels: </B>' + str(INACTIVE_TUNNELS)
+
+        response +=      '</BR><B>Active tunnels:   </B>'        
+        for tunnel in ACTIVE_TUNNELS:
+            response += '</BR>***Tunnel from: ' + tunnel.bss + ' to: ' + tunnel.apn.name + '***</BR>'
+            for node in tunnel.path_out:
+                response += str(node.dpid) + ' via port: ' + str(node.port_out) +', ' 
+            response += '</BR>***Tunnel from: ' + tunnel.apn.name + ' to: ' + tunnel.bss + '***</BR>'
+            for node in tunnel.path_in:
+                response += str(node.dpid) + ' via port: ' + str(node.port_out) +', '
+                
+
+        response +=      '</BR><B>Inactive tunnels: </B>'
+        for tunnel in INACTIVE_TUNNELS:
+            response += '</BR>***Tunnel from: ' + tunnel.bss + ' to: ' + tunnel.apn.name + '***</BR>'
+            for node in tunnel.path_out:
+                response += str(node.dpid) + ' via port: ' + str(node.port_out) +', '
+            response += '</BR>***Tunnel from: ' + tunnel.apn.name + ' to: ' + tunnel.bss + '***</BR>'
+            for node in tunnel.path_in:
+                response += str(node.dpid) + ' via port: ' + str(node.port_out) +',' 
+
+
+
         response +=      '</BR><B>Static topology graph nodes:  </B>' + str(topo.StaticGraph.nodes())
         response +=      '</BR><B>Dynamic topology graph nodes: </B>' + str(topo.DynamicGraph.nodes())
 
