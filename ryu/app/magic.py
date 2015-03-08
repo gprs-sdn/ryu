@@ -751,8 +751,6 @@ class GPRSControll(app_manager.RyuApp):
         ev.enter is False  -- Forwarder got disconnected  
         """
 
-        #ToBeDiscussed, should be fired only on newly connected forwarders, not on those who are leaving...
-        self.on_inner_dp_join(ev.dp)
 
         dp = ev.dp
         ofp = dp.ofproto
@@ -760,7 +758,8 @@ class GPRSControll(app_manager.RyuApp):
             
 
         if ev.enter is True:
-        ##For evry new forwarder we send out discovery ICMP packets out of every port except OFPP_CONTROLLER
+            self.on_inner_dp_join(dp)
+	    ##For evry new forwarder we send out discovery ICMP packets out of every port except OFPP_CONTROLLER
             LOG.debug('TOPO MNGR: Forwarder: ' + str(dp.id) + ' saying hello to Unifycore Controller, Unifycore warmly welcomes you!')
             for port in dp.ports:
                 if port != (ofp.OFPP_CONTROLLER):
