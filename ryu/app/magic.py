@@ -223,10 +223,6 @@ class topology():
 	data = json_graph.node_link_data(self.DynamicGraph)
 	return json.dumps(data)
 
-    def vymaz_tunel(tunelID):
-        for hrana in ((u,v) for u,v,d in DynamicGraph.edges_iter(data=True) if tunelID in d['tunely']):
-            self.DynamicGraph[hrana[0]][hrana[1]]['tunely'] = []
-
     def add_forwarder(self, fwID):
         self.StaticGraph.add_node(fwID)
 
@@ -239,22 +235,15 @@ class topology():
                 self.DynamicGraph.remove_edge(link[0],link[1])
 
     def add_link(self, fwID1, fwID2, ifnumm):
-        self.StaticGraph.add_edge(fwID1, fwID2, interf=ifnumm, tunely=[])
+        self.StaticGraph.add_edge(fwID1, fwID2, interf=ifnumm)
 
     def link_down(fwID1, fwID2):
-        for tunelID in DynamicGraph[fwID1][fwID2]['tunely']:
-            vymaz_tunel(tunelID)
         self.DynamicGraph.remove_edge(fwID1, fwID2)
 
     def link_up(fwID1, fwID2):
         self.DynamicGraph.edge[fwID1][fwID2] = StaticGraph[fwID1][fwID2]
 	
     def forwarder_down(self, fwID):
-        tunelIDs = []
-        for v in DynamicGraph[fwID].keys():
-            tunelIDs += DynamicGraph[fwID][v]['tunely']
-        for tunelID in tunelIDs:
-            vymaz_tunel(tunelID)
         self.DynamicGraph.remove_edges_from(nx.edges(DynamicGraph, fwID))
 
     def forwarder_up(self, fwID):
@@ -264,16 +253,12 @@ class topology():
         self.DynamicGraph = self.StaticGraph.to_directed()
 
     def get_tunnel(self, fwID1, fwID2):
-        hopy = nx.shortest_path(self.DynamicGraph, fwID1, fwID2)
+        hops = nx.shortest_path(self.DynamicGraph, fwID1, fwID2)
         path = []
         tunnelID=get_tid()
-        for k in hopy[1:-1]:
-            path.append(link(k,self.DynamicGraph[k][hopy[hopy.index(k)+1]]['interf']))
-            try:
-                self.DynamicGraph[k][hopy[hopy.index(k)+1]]['tunely'] += [tunnelID]
-            except NameError:
-                self.DynamicGraph[k][hopy[hopy.index(k)+1]]['tunely'] = [tunnelID]
-        return(path)
+        for k in hops[1:-1]:
+            path.append(link(k,self.DynamicGraph[k][hops[hops.index(k)+1]]['interf']))
+        return path
   
      
 ##Topology initialization
