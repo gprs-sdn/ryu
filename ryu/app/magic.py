@@ -226,13 +226,8 @@ class topology():
     def add_forwarder(self, fwID):
         self.StaticGraph.add_node(fwID)
 
-    #FIXME: This method actually removes all the edges not the node itself
-    #for path computation this is OK, but the removed forwarder stays in
-    # the DynamicGraph object, which certainly isn't OK 
     def del_forwarder(self, fwID):
-        for link in self.DynamicGraph.edges():
-            if fwID in link:
-                self.DynamicGraph.remove_edge(link[0],link[1])
+        self.DynamicGraph.remove_node(fwID)
 
     def add_link(self, fwID1, fwID2, ifnumm):
         self.StaticGraph.add_edge(fwID1, fwID2, interf=ifnumm)
