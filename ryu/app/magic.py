@@ -490,13 +490,18 @@ class GPRSControll(app_manager.RyuApp):
         uri = '/topology/dump'
         mapper.connect('stats',uri,
                        controller=RestCall, action='dump_topology',
-                       conditions=dict(method=['GET']))
+                       conditions=dict(method=['GET', 'HEAD']))
 
         #Testing
         uri =  '/test/info'
         mapper.connect('stats', uri,
                         controller=RestCall, action='test_info',
-                        conditions=dict(method=['GET']))       
+                        conditions=dict(method=['GET']))      
+
+        uri = '/test/plainMacTunnel/{opt}'
+        mapper.connect('stats', uri,
+                       controller=RestCall, action='create_mac_tunnel',
+                       conditions=dict(method=['GET'])) 
 
         ## DNS ressolution of IP address of PDP CNTs if it's not already defined
         ## !!! MAKE SURE you have valid DNS entry available in /etc/hosts or DNS server !!!
@@ -1007,9 +1012,22 @@ class RestCall(ControllerBase):
         LOG.debug('STATUS DUMP: Dumping Topology state at /test/info URL!')
         return (response)
 
+    def create_mac_tunnel(self, req, cmd):
+        LOG.debug('TESTING: Create MAC tunnel called ')
+        body = urlparse.parse_qs(cmd)
+        ingressPoint = str(body.get('ingressP'))[3:-2]
+        egressPonit =  str(body.get('egressP'))[3:-2]
+        ingressMac = str(body.get('ingressM'))[3:-2]
+        egressMac = str(body.get('egressM'))[3:-2]
+       
+        client_ip='1.1.1.1'
+
+        return (Response(content_type='application/json', body='{"address":"'+client_ip+'","dns1":"8.8.8.8","dns2":"8.8.8.8"}')) 
+
     def dump_topology (self, req):
         LOG.debug('TOPO DUMP: Dumping topology to JSON at /topology/dump ')
-        return (Response(content_type='application/json', body=topo.dump()))
+        return (Response(content_type='application/json', body=topo.dump(), headerlist=[('Access-Control-Allow-Origin', '*')]))
+        #return (Response(content_type='application/json', body=topo.dump()))
 
     def mod_pdp (self, req, cmd):
         #parsing GET parameters out of REST call
