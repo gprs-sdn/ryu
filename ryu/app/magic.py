@@ -684,10 +684,18 @@ class GPRSControll(app_manager.RyuApp):
 
         ##ARP request recieved - send 'I'm here' response
         if match['eth_type'] == 0x0806 and match['arp_op'] == 1:
-            LOG.debug("ARP request accepted")
-            _arp_send(dp=dp, port_out=match['in_port'], arp_code=2, eth_dst=match['eth_src'], eth_target=match['arp_sha'],
+            LOG.debug("PKT HND: ARP REQ HND: ARP request recieved")
+            if match['arp_spa'] == match['arp_tpa'] and match['eth_dst'] == 'ff:ff:ff:ff:ff:ff':
+                LOG.debug('PKT HND: ARP REQ HND:  This is a gratious ARP, we are not going to respond')
+            else:
+                prefix=match['arp_tpa'][:7]
+                if prefix == "169.254": 
+                    LOG.debug('PKT HND: ARP REQ HND: This is self assigned IP limited to LAN, not going to respond')
+                else:
+                    LOG.debug('PKT HND: ARP REQ HND: ARP request is a valid one, responding')
+                    _arp_send(dp=dp, port_out=match['in_port'], arp_code=2, eth_dst=match['eth_src'], eth_target=match['arp_sha'],
                       ip_target=match['arp_spa'], ip_sender=match['arp_tpa'])
-            LOG.debug('Reply to '+match['arp_spa'] +': Host '+match['arp_tpa']+' is at forwarder '+str(dp.id) )
+                LOG.debug('PKT HND: ARP REQ HND: Reply to '+match['arp_spa'] +': Host '+match['arp_tpa']+' is at forwarder '+str(dp.id) )
             return
 
         ##ARP response with target_ip==DISCOVERY_ARP_IP recieved - we found APN
