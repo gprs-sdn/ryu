@@ -98,14 +98,16 @@ VGSN_PORT=23000
 
 #
 ##
-## WMNC we are not going to use GPRS extensions, just MAC forwarding
+## WMNC we are not going to use GPRS extensions, just MAC forwarding in this iPerf setup
 ##
 #
 #BSS_EDGE_FORWARDER=[0xa]
 BSS_EDGE_FORWARDER=[]
 
 
-INET_EDGE_FORWARDER=[0xc]
+#INET_EDGE_FORWARDER=[0xc]
+INET_EDGE_FORWARDER=[]
+
 
 ##Generation of IP adresses  asigned to devices on PDP CNT actiavation
 ##XXX:Modify pool if needed
@@ -207,11 +209,15 @@ class apn:
         name -- Acces Point Name (string)
         ip_addr -- IP address of APN
         eth_addr -- MAC address of APN
+        dp -- forwarder on which is APN residing (due to filtering of APN request)
+        port -- port of given forwarder where is APN residing (due to filtering of APN requests)
     """
-    def __init__(self, name, ip_addr=None, eth_addr=None):
+    def __init__(self, name, ip_addr=None, eth_addr=None, dpid=None, port=None):
         self.name = name
         self.ip_addr = ip_addr
         self.eth_addr = eth_addr
+        self.dpid = dpid
+        self.port = port
 
 
 ##XXX:maybe should be created from config file (Yang?)
@@ -633,8 +639,13 @@ class GPRSControll(app_manager.RyuApp):
          
         ##Controller uses ARP to resolve mac_addresses of APNs
         ##All arp replies with target IP of DISCOVERY_ARP_IP are redirected to controller
+
+        ## FIXED: All ARPs replies are redirected to the controller regardless of the target IP
+        ##        
+        ## TODO:  In general we should reply only to ARPs from the APNs subner, and per APN basis (from the configuration)
+
         LOG.debug('TOPO MNGR: Installing ARP APN discovery flows on forwarder: ' + str(dp.id))
-        match= parser.OFPMatch(eth_type=0x0806, arp_op=2, arp_tpa=DISCOVERY_ARP_IP)
+        match= parser.OFPMatch(eth_type=0x0806, arp_op=2, )
         actions = [ parser.OFPActionOutput(ofp.OFPP_CONTROLLER)]
         self.add_flow(dp, 100, match, actions)
 
@@ -758,7 +769,12 @@ class GPRSControll(app_manager.RyuApp):
             return
 
         ##ARP response with target_ip==DISCOVERY_ARP_IP recieved - we found APN
-        if match['eth_type'] == 0x0806 and match['arp_op'] == 2 and match['arp_tpa'] == DISCOVERY_ARP_IP:
+        #
+        # FIXED: All ARP responses are replied, regardless of the target IP
+        #
+        # TODO : At this point only ARPs belonging to the APNs networks subnet should
+        #        be answered         
+        if match['eth_type'] == 0x0806 and match['arp_op'] == 2:
             LOG.debug('TOPO MNGR: ARP response with target APN discovery IP recieved at controller, processing for APN extraction')
             pkt = packet.Packet(array.array('B', ev.msg.data))
             arp_pkt=pkt.get_protocol(arp.arp)
@@ -769,7 +785,11 @@ class GPRSControll(app_manager.RyuApp):
             ##Search for apn in APN_POOL to add mac addr. and update topology
             for apn in APN_POOL:
                 if apn.ip_addr == apn_ip:
+                    LOG.debug('Recieved ARP response was from ' + apn.name + ' APN')
+                    recievedArpApnName = apn.name
                     apn.eth_addr = apn_mac
+                    apn.port = port
+                    apn.dpid = dp.id
                     topo.add_link(dp.id,str(apn.name),port)
                     topo.add_link(str(apn.name),dp.id,0)
                     topo.reload_topology()
@@ -778,31 +798,35 @@ class GPRSControll(app_manager.RyuApp):
                     ##Add special rules to edge forwarder
                     self.on_edge_inet_dp_join(dp, port)  
                     
-
-
+                    # FIX: We do not handle bss as a special APN
+                    #      For greater extensibility, BSS/UTRAN/LAN APNs (exit/enter) points
+                    #      will be handled in a generic manner
+                    #
                     ##Create MAC-tunnels between APN and all BSSs
-                    for bss in BSS_POOL:
-                        self.add_tunnel(bss,apn)
-                    break
+                    #for bss in BSS_POOL:
+                    #    self.add_tunnel(bss,apn)
+                    #break
 
-                    ### WMNC: In this case, we are not making tunnels between two types of ingress/egress point, but actually same type
-                    for sApn in APN_POOL:
-                        for dApn in APN_POOL:
-                            if sApn.name != dApn.name:
-                               LOG.debug('different sAPN dAPN found, lets find out, if there is a tunnel between them')
-                               # maybe also INACTIVE_TUNNELS should be checked
-                               # put this into function or use some python lseach function
-                               for plainMacTunnel in ACTIVE_TUNNELS:
-                                   if (plainMacTunnel.dApn == dApn and plainMacTunnel.sApn == sApn) or (plainMacTunnel.dApn == sApn and plainMacTunnel.sApn == dApn):
-                                      LOG.debug('such tunnel already exists')
-                                      LOG.debug('aborting adition of new tunnel')
-                                      break
-                                      return
+                    ### WMNC: In this case, we are not making tunnels between 
+                    #          two types of ingress/egress point, but actually same type
 
-                               LOG.debug('addition of tunnel was not aborted, such tunnel does not exist, continueing')                             
-                               self.add_plainMacTunnel(sApn,dApnapn)
-                    #not sure if the break is necessary..., but i will leave it this way  
-                    break
+                    for dApn in APN_POOL:
+                        # we are cycling through all possible APNs, looking for different APN tupples
+                        # with filled HW addresses (already found by APN search)
+                        if dApn.name != recievedArpApnName and dApn.eth_addr != None:
+                           LOG.debug('Different APNs with filled HW address found, lets find out if there is tunnel between them')
+                           # TODO: maybe also INACTIVE_TUNNELS should be checked
+                           # TODO: put this into function or use some python lseach function
+                           tunnelExist='false'
+                           for plainMacTunnel in ACTIVE_TUNNELS:
+                               if (plainMacTunnel.dApn.name == dApn.name and plainMacTunnel.sApn.name == recievedArpApnName) or (plainMacTunnel.dApn.name == recievedArpApnName and plainMacTunnel.sApn.name == dApn.name):
+                                  LOG.debug('Such tunnel already exist')
+                                  tunnelExist='true'
+
+                           if tunnelExist == 'false':    
+                              LOG.debug('Such tunnel does not exist, continueing')                             
+                              LOG.debug('calling add_plainMacTunnel for '+apn.name+' and '+dApn.name+' .')
+                              self.add_plainMacTunnel(apn,dApn)
             return
 
         ##ICMP echo with dst_ip==DISCOVERY_IP_DST recieved - new link between forwarders is up
@@ -863,7 +887,6 @@ class GPRSControll(app_manager.RyuApp):
                             integerIp += 1
                             # and put it back to string format                      
                             ArpOriginStringIp = socket.inet_ntoa(struct.pack("!I",integerIp))
-                            LOG.debug('ARO search preparation' + ArpOriginStringIp)
                             LOG.debug('TOPO MNGR: Forwarder: '+str(dp.id)+', port: '+ str(port)   + ' is looking for APN: ' + str(apn.name) +' at IP: '+str(apn.ip_addr)+' with ARP search source IP: ' + ArpOriginStringIp)
                             _arp_send(dp=dp, port_out=port, arp_code=1, ip_target=apn.ip_addr, ip_sender=ArpOriginStringIp)
 
@@ -1041,6 +1064,8 @@ class GPRSControll(app_manager.RyuApp):
         ##Attempt to find path between the two nodes
         ##If no path is found, tunnel is added to INACTIVE_TUNNELS and is attempted to recreate next time
         ##when new link between forwarders is up
+        LOG.debug('Searching for path between '+self.sApn.name+' and '+self.dApn.name )
+        LOG.debug('endpoint are               '+self.sApn.ip_addr+' and '+self.dApn.ip_addr)
         try:
             self.path_out = topo.get_tunnel(self.sApn.name, self.dApn.name)
             self.path_in  = topo.get_tunnel(self.dApn.name, self.sApn.name)
@@ -1050,6 +1075,9 @@ class GPRSControll(app_manager.RyuApp):
             INACTIVE_TUNNELS.append(plainMacTunnel(self.sApn,self.dApn, self.tid_out, self.tid_in))
             return
 
+
+
+        LOG.debug('Path_in and Path_out found, lets install OF rules on forwarders')
         ##Set forwarding rules for all but last forwarder on the way OUT
         ##On first forwarder on the way OUT these rules are placed into table MAC_TUNNEL_TABLE while on 'dumb' forwarders it goes to 0
         dp = dpset.get(self.path_out[0].dpid)
@@ -1057,6 +1085,9 @@ class GPRSControll(app_manager.RyuApp):
         match = parser.OFPMatch(eth_dst=self.tid_out)
         actions = [parser.OFPActionOutput(self.path_out[0].port_out)]
         self.add_flow(dp, 300, match, actions, MAC_TUNNEL_TABLE)
+        LOG.debug('Rule for first forwarder in  path_out installed')
+
+
 
         ##Rules for all 'dumb' forwardes on the way OUT
         for node in self.path_out[1:-1]:
@@ -1065,13 +1096,31 @@ class GPRSControll(app_manager.RyuApp):
             match = parser.OFPMatch(eth_dst=self.tid_out)
             actions = [parser.OFPActionOutput(node.port_out)]
             self.add_flow(dp, 300, match, actions, 0)
+            LOG.debug('installed rule on dumb transport forwarder on path_out ')
+
 
         ##Last forwarder on the way OUT needs to set eth_dst to eth_addr of APN otherwise it wont be processed
         dp = dpset.get(self.path_out[-1].dpid)
         parser = dp.ofproto_parser
         match = parser.OFPMatch(eth_dst=self.tid_out)
-        actions = [ parser.OFPActionSetField(eth_dst=self.apn.eth_addr), parser.OFPActionOutput(self.path_out[-1].port_out)]
+        actions = [ parser.OFPActionSetField(eth_dst=self.dApn.eth_addr), parser.OFPActionOutput(self.path_out[-1].port_out)]
         self.add_flow(dp, 300, match, actions, 0)
+        LOG.debug('installed rule on last forwarder on the path_out')
+
+
+
+        LOG.debug('---------')
+        LOG.debug('Way out done, proceeding to way in')
+        LOG.debug('---------')
+
+
+
+
+
+
+
+
+
 
         ##Here comes tunnel for way IN
         ##On first forwarder on the way IN these rules are placed into table MAC_TUNNEL_TABLE while on 'dumb' forwarders it goes to 0
@@ -1080,6 +1129,7 @@ class GPRSControll(app_manager.RyuApp):
         match = parser.OFPMatch(eth_dst=self.tid_in)
         actions = [parser.OFPActionOutput(self.path_in[0].port_out)]
         self.add_flow(dp, 300, match, actions, MAC_TUNNEL_TABLE)
+        LOG.debug('Rule for first forwarder in path_in installed')
 
         ##Rules for 'dumb' forwarders
         for node in self.path_in[1:-1]:
@@ -1088,6 +1138,7 @@ class GPRSControll(app_manager.RyuApp):
             match = parser.OFPMatch(eth_dst=self.tid_in)
             actions = [parser.OFPActionOutput(node.port_out)]
             self.add_flow(dp, 300, match, actions, 0)
+            LOG.debug('installed rule on dumb transport forwarder on path_in')
 
         ##Last forwarder on the way IN sends packet to table #4 where it's matched based on active PDP CNTs
         dp = dpset.get(self.path_in[-1].dpid)
@@ -1096,10 +1147,10 @@ class GPRSControll(app_manager.RyuApp):
         inst = [ parser.OFPInstructionGotoTable(OF_GPRS_TABLE_IN) ]
         req = parser.OFPFlowMod(datapath=dp, priority=500, match=match, instructions=inst, table_id=0)
         dp.send_msg(req)
+        LOG.debug('installed rule on last forwarder on the path_in')
 
         ACTIVE_TUNNELS.append(plainMacTunnel(self.sApn,self.dApn, self.tid_out, self.tid_in, self.path_out, self.path_in))
-        LOG.debug('Tunnel between '+str(self.bss)+' and '+str(self.apn.name) + ' was set up.')
-
+        LOG.debug('Tunnel between '+self.sApn.name+' and '+self.dApn.name + ' was set up.')
 
     def add_flow(self, dp, priority, match, actions, table=0):
         ofp = dp.ofproto
