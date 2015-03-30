@@ -1016,10 +1016,11 @@ class RestCall(ControllerBase):
         return (response)
 
     def dump_topology (self, req):
-        LOG.debug('TOPO DUMP: Dumping topology to JSON at /topology/dump ')
+        LOG.debug('REST: TOPO DUMP: Dumping topology to JSON at /topology/dump ')
         return (Response(content_type='application/json', body=topo.dump(), headerlist=[('Access-Control-Allow-Origin', '*')]))
 
     def mod_pdp (self, req, cmd):
+        LOG.debug('REST: mod_pdp: Modification of PDP called')
         #parsing GET parameters out of REST call
         body = urlparse.parse_qs(cmd)
         
@@ -1037,6 +1038,8 @@ class RestCall(ControllerBase):
 
         tid_out=None
         tid_in=None
+        path_in=None
+        path_out=None
         #XXX:How about a HTTP response to vGSN if required tunnel doesnt exist?
         ## We find tunnel that matches criteria from Activate PDP context request
         for act_tunnel in ACTIVE_TUNNELS:
@@ -1045,12 +1048,19 @@ class RestCall(ControllerBase):
                 tid_in = act_tunnel.tid_in
                 path_in =  act_tunnel.path_in
                 path_out = act_tunnel.path_out
+                LOG.debug('REST: mod_pdp: Tunnel was found')
+                break
+
+        if tid_out == None or tid_in == None or path_in == None or path_out == None:
+            LOG.error('REST: mod_pdp: ERROR: No suitable tunnel for given PDP was found')
+            return Response(status=500, content_type='text', body='Tunnel not found')
+
    
         #XXX:review, maybe larger ip pool, for now it's enough
         #TODO:in case on CNT deactivation, return IP to pool
         ## IP address is picked, in case there is no left, method ends and returns Internal Error HTTP response to caller
         if len(IP_POOL) == 0:
-            LOG.error('ERROR: We are out of IP addresses') 
+            LOG.error('REST: mod_pdp: ERROR: We are out of IP addresses') 
             return Response(status=500, content_type='text',body='Out of IPs')
         
         client_ip=IP_POOL.pop()
