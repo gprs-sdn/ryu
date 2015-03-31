@@ -79,9 +79,12 @@ GPRS_SDN_EXPERIMENTER = int("0x42", 16)
 
 ##Number of OF table that contains GPRS-related flow rules on the way OUT
 OF_GPRS_TABLE = 2
+## access rules should be unified in one table--> ACCESS TABLE
+ACCESS_TABLE_OUT = 2
 
 ##Number of OF table that contains GPRS-related flow rules on th way IN
 OF_GPRS_TABLE_IN = 4
+ACCESS_TABLE_IN = 4
 
 ##Number of OF table that contains MAC_TUNNEL-related flow rules
 MAC_TUNNEL_TABLE = 3
@@ -107,6 +110,11 @@ BSS_EDGE_FORWARDER=[]
 
 #INET_EDGE_FORWARDER=[0xc]
 INET_EDGE_FORWARDER=[]
+
+LAN_TYPE_FORWARDERS=[0xa, 0xc]
+BSS_TYPE_FORWARDERS=[]
+INET_TYPE_FORWARDERS=[]
+
 
 
 ##Generation of IP adresses  asigned to devices on PDP CNT actiavation
@@ -642,14 +650,23 @@ class GPRSControll(app_manager.RyuApp):
 
         ## FIXED: All ARPs replies are redirected to the controller regardless of the target IP
         ##        
-        ## TODO:  In general we should reply only to ARPs from the APNs subner, and per APN basis (from the configuration)
+        ## TODO:  In general we should reply only to ARPs from the APNs subnet, and per APN basis (from the configuration)
 
         LOG.debug('TOPO MNGR: Installing ARP APN discovery flows on forwarder: ' + str(dp.id))
-        match= parser.OFPMatch(eth_type=0x0806, arp_op=2, )
+        match = parser.OFPMatch(eth_type=0x0806, arp_op=2, )
         actions = [ parser.OFPActionOutput(ofp.OFPP_CONTROLLER)]
         self.add_flow(dp, 100, match, actions)
 
- 
+
+        # We match only ethertype, that means all IP packed data should be match
+        # It is some kind of flow of last resort, therefore it has small priority
+        if dp.id in LAN_TYPE_FORWARDERS:
+            LOG.debug('TOPO MNGR: Forwarder: ' + str(dp.id) + 'is a LAN edge forwarder, installing additional rules' )
+            match = parser.OFPMatch(eth_type=0x800 ) 
+            actions = [parser.OFPActionOutput(ofp.OFPP_CONTROLLER)]
+            self.add_flow(dp, 2, match, actions)
+            
+
 
         ##Following rules are applied only on forwarders bellonging to BSS_EDGE_FORWARDER group
         ##Rules are applied based on priority of match (highest priority first)
@@ -846,13 +863,56 @@ class GPRSControll(app_manager.RyuApp):
             topo.reload_topology()
             LOG.debug('TOPO MNGR: Topology changed: New link between '+str(ev.msg.datapath.id)+' and '+str(neighbourDPID)+' was discovered.')
 
-            ##retry to create inactive tunnels/find better paths for already active tunnels
-            ##self.retry_tunnels()
+            ##      retry to create inactive tunnels
+            ## TODO:find better paths for already active tunnels
             for inactiveTunnel in INACTIVE_TUNNELS:
               LOG.debug('TOPO MNGR: Topology changed: trying to re-build inactive tunnel between:' + inactiveTunnel.sApn.name + ' and ' + inactiveTunnel.dApn.name)
               INACTIVE_TUNNELS.remove(inactiveTunnel)
               self.add_plainMacTunnel(inactiveTunnel.sApn,inactiveTunnel.dApn)
-        return
+            return
+
+        # flow of last resort (process for routing)
+        if match['eth_type'] == 0x0800:
+           LOG.debug('*****************Flow of last resort matched(plain IP), process for routing********')
+           ## Not very proud of myself, but it will do the trick
+           ## Turbo lumberjack routing logic
+           ## TODO: Implement a longest prefix match routing
+           for tunnel in ACTIVE_TUNNELS:
+              if (tunnel.sApn.ip_addr == match['ipv4_dst'] and tunnel.dApn.ip_addr == match['ipv4_src']) or (tunnel.sApn.ip_addr == match['ipv4_src'] and tunnel.dApn.ip_addr == match['ipv4_dst']):
+                 LOG.debug('ROUTING: Hit in routing table')
+                 LOG.debug('ROUTING: Installing LAN acces forwarders flows') 
+             
+                 #
+                 # FIXME: incomplete set of rules installed on LAN Access forwarders
+                 # TODO : Philosophy of table IDs should be clarified, as now it total mess!!!
+                 # TODO : this should be done only once, from that moment, all user plane packets
+                 #        should travelse only forwarder and should not be sent to controller
+
+                 # WAY OUT
+                 dp = dpset.get(tunnel.sApn.dpid)
+                 parser = dp.ofproto_parser
+                 ofp = dp.ofproto
+                 match = parser.OFPMatch (ipv4_dst=tunnel.dApn.ip_addr)
+                 actions = [parser.OFPActionSetField(eth_src=tunnel.tid_in), parser.OFPActionSetField(eth_dst=tunnel.tid_out)]
+                 inst =  [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions), parser.OFPInstructionGotoTable(MAC_TUNNEL_TABLE)]
+                 req = parser.OFPFlowMod(datapath=dp, priority=100, match=match, instructions=inst, table_id = ACCESS_TABLE_OUT)
+                 dp.send_msg(req)
+
+                 #WAY IN
+                 dp = dpset.get(tunnel.dApn.dpid)
+                 parser = dp.ofproto_parser
+                 ofp = dp.ofproto
+                 match = parser.OFPMatch (ipv4_dst=tunnel.sApn.ip_addr)
+                 actions = [parser.OFPActionSetField(eth_dst=tunnel.tid_in), parser.OFPActionSetField(eth_src=tunnel.tid_out)]
+                 inst =  [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions), parser.OFPInstructionGotoTable(MAC_TUNNEL_TABLE)]
+                 req = parser.OFPFlowMod(datapath=dp, priority=300, match=match, instructions=inst, table_id = 0)
+                 dp.send_msg(req)
+                  
+                 # I guess 2 more rules are required, agh!!!
+                 LOG.debug('ROUTING: Rules on access edge forwarders installed')
+                 break
+           return
+
 
     @set_ev_cls(dpset.EventDP, [MAIN_DISPATCHER, DEAD_DISPATCHER])
     def forwarder_state_changed(self, ev):
