@@ -89,6 +89,19 @@ ACCESS_TABLE_IN = 4
 ##Number of OF table that contains MAC_TUNNEL-related flow rules
 MAC_TUNNEL_TABLE = 3
 
+
+#
+##
+### New Flow table constants
+##
+#
+
+INGRESS_TABLE=0                  #first ingress table
+ACESSS_ADAPTATION_TABLE_IN_1=1   #decapsulation from special headers (e.g. GPRS)
+ACCESS_ADAPTATION_TABLE_IN_2=2   #decapsulation from special headers (e.g. GPRS)
+MAC_TUNNEL_TABLE=3               #MAC tunnel switching 
+ACCESS_ADAPTATION_TABLE_OUT=4    #encapsulation to special headers (e.g. GPRS), NAT, forwarder output 
+
 ##Hardcode IP adresses of our GPRS nodes
 BSS_IP="192.168.27.125"
 BSS_PORT=23000
@@ -144,6 +157,8 @@ INACTIVE_TUNNELS=[]
 ##List of used Tunnel identifiers
 TID_POOL = []
 
+## Temporary solution till I will have time to implement a decent routing table
+routesList = []
 
 
 ###Topology and topology-related classes
@@ -877,40 +892,77 @@ class GPRSControll(app_manager.RyuApp):
            ## Not very proud of myself, but it will do the trick
            ## Turbo lumberjack routing logic
            ## TODO: Implement a longest prefix match routing
+           LOG.debug('Looking for tunnel: DST_IP: ' + match['ipv4_dst'] + ' SRC_IP: ' + match['ipv4_src'] + 'Incoming from FWD: ' + str(dp.id))
            for tunnel in ACTIVE_TUNNELS:
               if (tunnel.sApn.ip_addr == match['ipv4_dst'] and tunnel.dApn.ip_addr == match['ipv4_src']) or (tunnel.sApn.ip_addr == match['ipv4_src'] and tunnel.dApn.ip_addr == match['ipv4_dst']):
-                 LOG.debug('ROUTING: Hit in routing table')
-                 LOG.debug('ROUTING: Installing LAN acces forwarders flows') 
+                 LOG.debug('ROUTING: Hit in list of tunnels')
+
+                 # check if there is such entry in routing table
+                 routeExists='false'
+                 for source, destination in routesList:
+                   if ( source == match['ipv4_dst'] and destination == match['ipv4_src'] ) or ( source == match['ipv4_src'] and destination == match['ipv4_dst'] ):
+                     routeExists='true'
+                     LOG.debug('ERROR: such route already exists, aborting addition of new route, network setup might be messed up')
+                     break
+                   
+                 if routeExists=='false':
+                    LOG.debug('ROUTING: Installing LAN acces forwarders flows for route-DST_IP: ' + match['ipv4_dst'] + ' SRC_IP: ' + match['ipv4_src']) 
              
-                 #
-                 # FIXME: incomplete set of rules installed on LAN Access forwarders
-                 # TODO : Philosophy of table IDs should be clarified, as now it total mess!!!
-                 # TODO : this should be done only once, from that moment, all user plane packets
-                 #        should travelse only forwarder and should not be sent to controller
+                    #
+                    # FIXME: incomplete set of rules installed on LAN Access forwarders
+                    # TODO : Philosophy of table IDs should be clarified, as now it total mess!!!
+                    # TODO : this should be done only once, from that moment, all user plane packets
+                    #        should travelse only forwarder and should not be sent to controller
+   
+                    dp = dpset.get(tunnel.sApn.dpid)
+                    parser = dp.ofproto_parser
+                    ofp = dp.ofproto
+                    match = parser.OFPMatch (eth_type=0x0800, ipv4_dst=tunnel.dApn.ip_addr)
+                    actions = [parser.OFPActionSetField(eth_src=tunnel.tid_in), parser.OFPActionSetField(eth_dst=tunnel.tid_out)]
+                    inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions), parser.OFPInstructionGotoTable(MAC_TUNNEL_TABLE)]
+                    req = parser.OFPFlowMod(datapath=dp, priority=100, match=match, instructions=inst, table_id=INGRESS_TABLE)
+                    dp.send_msg(req)
+                    LOG.debug('ROUTING: Installing flow to forwarderID: ' + str(dp.id) + ',Table: ' + str(INGRESS_TABLE))
 
-                 # WAY OUT
-                 dp = dpset.get(tunnel.sApn.dpid)
-                 parser = dp.ofproto_parser
-                 ofp = dp.ofproto
-                 match = parser.OFPMatch (ipv4_dst=tunnel.dApn.ip_addr)
-                 actions = [parser.OFPActionSetField(eth_src=tunnel.tid_in), parser.OFPActionSetField(eth_dst=tunnel.tid_out)]
-                 inst =  [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions), parser.OFPInstructionGotoTable(MAC_TUNNEL_TABLE)]
-                 req = parser.OFPFlowMod(datapath=dp, priority=100, match=match, instructions=inst, table_id = ACCESS_TABLE_OUT)
-                 dp.send_msg(req)
 
-                 #WAY IN
-                 dp = dpset.get(tunnel.dApn.dpid)
-                 parser = dp.ofproto_parser
-                 ofp = dp.ofproto
-                 match = parser.OFPMatch (ipv4_dst=tunnel.sApn.ip_addr)
-                 actions = [parser.OFPActionSetField(eth_dst=tunnel.tid_in), parser.OFPActionSetField(eth_src=tunnel.tid_out)]
-                 inst =  [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions), parser.OFPInstructionGotoTable(MAC_TUNNEL_TABLE)]
-                 req = parser.OFPFlowMod(datapath=dp, priority=300, match=match, instructions=inst, table_id = 0)
-                 dp.send_msg(req)
-                  
-                 # I guess 2 more rules are required, agh!!!
-                 LOG.debug('ROUTING: Rules on access edge forwarders installed')
-                 break
+                    dp = dpset.get(tunnel.dApn.dpid)
+                    parser = dp.ofproto_parser
+                    ofp = dp.ofproto
+                    match = parser.OFPMatch (eth_dst=tunnel.tid_out)
+                    actions = [parser.OFPActionSetField(eth_dst=tunnel.dApn.eth_addr), parser.OFPActionOutput(tunnel.path_out[-1].port_out)]
+                    inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
+                    req = parser.OFPFlowMod(datapath=dp, priority=300, match=match, instructions=inst, table_id=ACCESS_ADAPTATION_TABLE_OUT)
+                    dp.send_msg(req)
+                    LOG.debug('ROUTING: Installing flow to forwarderID: ' + str(dp.id) + ',Table: ' + str(ACCESS_ADAPTATION_TABLE_OUT))
+
+
+                    #WAY IN
+                    dp = dpset.get(tunnel.dApn.dpid)
+                    parser = dp.ofproto_parser
+                    ofp = dp.ofproto
+                    match = parser.OFPMatch (eth_type=0x0800, ipv4_dst=tunnel.sApn.ip_addr)
+                    actions = [parser.OFPActionSetField(eth_dst=tunnel.tid_in), parser.OFPActionSetField(eth_src=tunnel.tid_out)]
+                    inst =  [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions), parser.OFPInstructionGotoTable(MAC_TUNNEL_TABLE)]
+                    req = parser.OFPFlowMod(datapath=dp, priority=100, match=match, instructions=inst, table_id = INGRESS_TABLE)
+                    dp.send_msg(req)
+                    LOG.debug('ROUTING: Installing flow to forwarderID: ' + str(dp.id) + ',Table: ' + str(INGRESS_TABLE))
+
+ 
+                    dp = dpset.get(tunnel.sApn.dpid)
+                    parser = dp.ofproto_parser
+                    ofp = dp.ofproto
+                    match = parser.OFPMatch (eth_dst=tunnel.tid_in)
+                    actions = [parser.OFPActionSetField(eth_dst=tunnel.sApn.eth_addr), parser.OFPActionOutput(tunnel.path_in[-1].port_out)]
+                    inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
+                    req = parser.OFPFlowMod(datapath=dp, priority=300, match=match, instructions=inst, table_id=ACCESS_ADAPTATION_TABLE_OUT)
+                    dp.send_msg(req)
+                    LOG.debug('ROUTING: Installing flow to forwarderID: ' + str(dp.id) + ',Table: ' + str(ACCESS_ADAPTATION_TABLE_OUT))
+
+
+                    LOG.debug('ROUTING: Rules on access edge forwarders installed')
+                    LOG.debug('Adding route: DST_IP: ' + tunnel.sApn.ip_addr + ' SRC_IP: ' + tunnel.sApn.ip_addr )
+                    routesList.append( ( tunnel.sApn.ip_addr, tunnel.dApn.ip_addr) )
+                    break
            return
 
 
@@ -982,8 +1034,10 @@ class GPRSControll(app_manager.RyuApp):
         LOG.debug('Searching for path between '+self.sApn.name+' and '+self.dApn.name )
         LOG.debug('endpoint are               '+self.sApn.ip_addr+' and '+self.dApn.ip_addr)
         try:
+            #PATH_OUT ---> from source to destination
             self.path_out = topo.get_tunnel(self.sApn.name, self.dApn.name)
             self.path_in  = topo.get_tunnel(self.dApn.name, self.sApn.name)
+            #PATH_IN ---> fron destination to source
         except nx.NetworkXNoPath:
             # WMNC TODO, do also retry tunnels have to be implemented.....
             LOG.warning("Warning: Couldn't find path, network might not be converged yet. Retrying when next forwarder joins network.")
@@ -1010,7 +1064,7 @@ class GPRSControll(app_manager.RyuApp):
             parser = dp.ofproto_parser
             match = parser.OFPMatch(eth_dst=self.tid_out)
             actions = [parser.OFPActionOutput(node.port_out)]
-            self.add_flow(dp, 300, match, actions, 0)
+            self.add_flow(dp, 300, match, actions, INGRESS_TABLE)
             LOG.debug('installed rule on dumb transport forwarder on path_out, forwarderID: ' + str(dp.id))
 
 
@@ -1018,8 +1072,9 @@ class GPRSControll(app_manager.RyuApp):
         dp = dpset.get(self.path_out[-1].dpid)
         parser = dp.ofproto_parser
         match = parser.OFPMatch(eth_dst=self.tid_out)
-        actions = [ parser.OFPActionSetField(eth_dst=self.dApn.eth_addr), parser.OFPActionOutput(self.path_out[-1].port_out)]
-        self.add_flow(dp, 300, match, actions, 0)
+        inst = [parser.OFPInstructionGotoTable(ACCESS_ADAPTATION_TABLE_OUT)]
+        req = parser.OFPFlowMod(datapath=dp, priority=300, match=match, instructions=inst, table_id=INGRESS_TABLE)
+        dp.send_msg(req)
         LOG.debug('installed rule on last forwarder on the path_out, forwarderID: ' + str(dp.id))
 
 
@@ -1047,15 +1102,15 @@ class GPRSControll(app_manager.RyuApp):
             parser = dp.ofproto_parser
             match = parser.OFPMatch(eth_dst=self.tid_in)
             actions = [parser.OFPActionOutput(node.port_out)]
-            self.add_flow(dp, 300, match, actions, 0)
+            self.add_flow(dp, 300, match, actions, INGRESS_TABLE)
             LOG.debug('installed rule on dumb transport forwarder on path_in, forwarderID: ' + str(dp.id))
 
         ##Last forwarder on the way IN sends packet to table #4 where it's matched based on active PDP CNTs
         dp = dpset.get(self.path_in[-1].dpid)
         parser = dp.ofproto_parser
         match = parser.OFPMatch(eth_dst=self.tid_in)
-        inst = [ parser.OFPInstructionGotoTable(OF_GPRS_TABLE_IN) ]
-        req = parser.OFPFlowMod(datapath=dp, priority=500, match=match, instructions=inst, table_id=0)
+        inst = [ parser.OFPInstructionGotoTable(ACCESS_ADAPTATION_TABLE_OUT) ]
+        req = parser.OFPFlowMod(datapath=dp, priority=300, match=match, instructions=inst, table_id=INGRESS_TABLE)
         dp.send_msg(req)
         LOG.debug('installed rule on last forwarder on the path_in, forwarderID: ' + str(dp.id))
 
