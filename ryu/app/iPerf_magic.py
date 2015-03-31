@@ -847,7 +847,11 @@ class GPRSControll(app_manager.RyuApp):
             LOG.debug('TOPO MNGR: Topology changed: New link between '+str(ev.msg.datapath.id)+' and '+str(neighbourDPID)+' was discovered.')
 
             ##retry to create inactive tunnels/find better paths for already active tunnels
-            self.retry_tunnels()
+            ##self.retry_tunnels()
+            for inactiveTunnel in INACTIVE_TUNNELS:
+              LOG.debug('TOPO MNGR: Topology changed: trying to re-build inactive tunnel between:' + inactiveTunnel.sApn.name + ' and ' + inactiveTunnel.dApn.name)
+              INACTIVE_TUNNELS.remove(inactiveTunnel)
+              self.add_plainMacTunnel(inactiveTunnel.sApn,inactiveTunnel.dApn)
         return
 
     @set_ev_cls(dpset.EventDP, [MAIN_DISPATCHER, DEAD_DISPATCHER])
@@ -896,155 +900,6 @@ class GPRSControll(app_manager.RyuApp):
             ##JUST REMOVING NODE FROM TOPOLOGY ISNT ENOUGH!
             LOG.debug('TOPO MNGR: Forwarder: ' + str(dp.id) + ' is leaving topology. It was a pleasure for us!')
             topo.del_forwarder(dp.id)
-
-
-    def retry_tunnels(self):
-        """ 
-             This is very similar to add_tunnel method...I'm too tired to make and call
-             modified version of add_tunnel... 
-        """
-
-        ##Search inactive tunels to see if any path can be resolved now, if yes...do the same thing as add_tunnel()
-        for inact_tunnel in INACTIVE_TUNNELS:
-            try:
-                self.path_out = topo.get_tunnel(inact_tunnel.bss, inact_tunnel.apn.name)
-                self.path_in  = topo.get_tunnel(inact_tunnel.apn.name, inact_tunnel.bss)
-                
-            except nx.NetworkXNoPath:
-                LOG.warning("Warning: Couldn't find path, network might not be converged yet. Retrying when next forwarder joins network...again...")
-                return
-            
-            INACTIVE_TUNNELS.remove(inact_tunnel)
-
-            ##Set forwarding rules for all but last forwarder on the way OUT 
-            ##On first forwarder on the way OUT these rules are placed into table MAC_TUNNEL_TABLE while on 'dumb' forwarders it goes to 0
-            dp = dpset.get(self.path_out[0].dpid)
-            parser = dp.ofproto_parser
-            match = parser.OFPMatch(eth_dst=inact_tunnel.tid_out)
-            actions = [parser.OFPActionOutput(self.path_out[0].port_out)]
-            self.add_flow(dp, 300, match, actions, MAC_TUNNEL_TABLE)
-
-            ##Rules for all 'dumb' forwardes on the way OUT
-            for node in self.path_out[1:-1]:
-                dp = dpset.get(node.dpid)
-                parser = dp.ofproto_parser
-                match = parser.OFPMatch(eth_dst=inact_tunnel.tid_out)
-                actions = [parser.OFPActionOutput(node.port_out)]
-                self.add_flow(dp, 300, match, actions, 0)
-
-            ##Last forwarder on the way OUT needs to set eth_dst to eth_addr of APN otherwise it wont be processed
-            dp = dpset.get(self.path_out[-1].dpid)
-            parser = dp.ofproto_parser
-            match = parser.OFPMatch(eth_dst=inact_tunnel.tid_out)
-            actions = [ parser.OFPActionSetField(eth_dst=inact_tunnel.apn.eth_addr), parser.OFPActionOutput(self.path_out[-1].port_out)]
-            self.add_flow(dp, 300, match, actions, 0)
-
-            ##Here comes tunnel for the way IN
-            ##On first forwarder on the way IN these rules are placed into table MAC_TUNNEL_TABLE while on 'dumb' forwarders it goes to 0
-            dp = dpset.get(self.path_in[0].dpid)
-            parser = dp.ofproto_parser
-            match = parser.OFPMatch(eth_dst=inact_tunnel.tid_in)
-            actions = [parser.OFPActionOutput(self.path_in[0].port_out)]
-            self.add_flow(dp, 300, match, actions, MAC_TUNNEL_TABLE)
-
-            ##Rules for all 'dumb' forwardes on the way IN
-            for node in self.path_in[1:-1]:
-                dp = dpset.get(node.dpid)
-                parser = dp.ofproto_parser
-                match = parser.OFPMatch(eth_dst=inact_tunnel.tid_in)
-                actions = [parser.OFPActionOutput(node.port_out)]
-                self.add_flow(dp, 300, match, actions, 0)
-
-            ##Last forwarder on the way IN sends packet to table OF_GPRS_TABLE_IN where it's matched based on active PDP CNTs
-            dp = dpset.get(self.path_in[-1].dpid)
-            parser = dp.ofproto_parser
-            match = parser.OFPMatch(eth_dst=inact_tunnel.tid_in)
-            inst = [ parser.OFPInstructionGotoTable(OF_GPRS_TABLE_IN) ]
-            req = parser.OFPFlowMod(datapath=dp, priority=500, match=match, instructions=inst, table_id=0)
-            dp.send_msg(req)
-
-            ACTIVE_TUNNELS.append(tunnel(inact_tunnel.bss, inact_tunnel.apn, self.tid_out, self.tid_in, self.path_out, self.path_in))
-            LOG.debug('TOPO MNGR: Inactive tunnel between ' + str(inact_tunnel.bss) + ' and ' + str(inact_tunnel.apn.name) +' put into active state!')
-
-
-
-   
-
-    def add_tunnel(self, _bss_, _apn_):
-        """
-        This method is called when new APN is discovered to connect it with all BSS stations via MAC Tunnels
-
-        Keyword arguments:
-            _bss_ -- usualy string representing BSS node in topology
-            _apn_ -- object of apn class representing APN in topology
-            
-        """
-
-        self.bss = _bss_
-        self.apn = _apn_
-        self.tid_out = get_tid()
-        self.tid_in  = get_tid()
-
-        ##Attempt to find path between the two nodes
-        ##If no path is found, tunnel is added to INACTIVE_TUNNELS and is attempted to recreate next time
-        ##when new link between forwarders is up
-        try:
-            self.path_out = topo.get_tunnel(self.bss, self.apn.name)
-            self.path_in  = topo.get_tunnel(self.apn.name, self.bss)
-        except nx.NetworkXNoPath:
-            LOG.warning("Warning: Couldn't find path, network might not be converged yet. Retrying when next forwarder joins network.")
-            INACTIVE_TUNNELS.append(tunnel(self.bss,self.apn, self.tid_out, self.tid_in))
-            return
-
-        ##Set forwarding rules for all but last forwarder on the way OUT
-        ##On first forwarder on the way OUT these rules are placed into table MAC_TUNNEL_TABLE while on 'dumb' forwarders it goes to 0
-        dp = dpset.get(self.path_out[0].dpid)
-        parser = dp.ofproto_parser
-        match = parser.OFPMatch(eth_dst=self.tid_out)
-        actions = [parser.OFPActionOutput(self.path_out[0].port_out)]
-        self.add_flow(dp, 300, match, actions, MAC_TUNNEL_TABLE)
-
-        ##Rules for all 'dumb' forwardes on the way OUT
-        for node in self.path_out[1:-1]:
-            dp = dpset.get(node.dpid)
-            parser = dp.ofproto_parser
-            match = parser.OFPMatch(eth_dst=self.tid_out)
-            actions = [parser.OFPActionOutput(node.port_out)]
-            self.add_flow(dp, 300, match, actions, 0)
-
-        ##Last forwarder on the way OUT needs to set eth_dst to eth_addr of APN otherwise it wont be processed
-        dp = dpset.get(self.path_out[-1].dpid)
-        parser = dp.ofproto_parser
-        match = parser.OFPMatch(eth_dst=self.tid_out)
-        actions = [ parser.OFPActionSetField(eth_dst=self.apn.eth_addr), parser.OFPActionOutput(self.path_out[-1].port_out)]
-        self.add_flow(dp, 300, match, actions, 0)
-
-        ##Here comes tunnel for way IN
-        ##On first forwarder on the way IN these rules are placed into table MAC_TUNNEL_TABLE while on 'dumb' forwarders it goes to 0
-        dp = dpset.get(self.path_in[0].dpid)
-        parser = dp.ofproto_parser
-        match = parser.OFPMatch(eth_dst=self.tid_in)
-        actions = [parser.OFPActionOutput(self.path_in[0].port_out)]
-        self.add_flow(dp, 300, match, actions, MAC_TUNNEL_TABLE)
-
-        ##Rules for 'dumb' forwarders
-        for node in self.path_in[1:-1]:
-            dp = dpset.get(node.dpid)
-            parser = dp.ofproto_parser
-            match = parser.OFPMatch(eth_dst=self.tid_in)
-            actions = [parser.OFPActionOutput(node.port_out)]
-            self.add_flow(dp, 300, match, actions, 0)
-
-        ##Last forwarder on the way IN sends packet to table #4 where it's matched based on active PDP CNTs
-        dp = dpset.get(self.path_in[-1].dpid)
-        parser = dp.ofproto_parser
-        match = parser.OFPMatch(eth_dst=self.tid_in)
-        inst = [ parser.OFPInstructionGotoTable(OF_GPRS_TABLE_IN) ]
-        req = parser.OFPFlowMod(datapath=dp, priority=500, match=match, instructions=inst, table_id=0)
-        dp.send_msg(req)
-
-        ACTIVE_TUNNELS.append(tunnel(self.bss,self.apn, self.tid_out, self.tid_in, self.path_out, self.path_in))
-        LOG.debug('Tunnel between '+str(self.bss)+' and '+str(self.apn.name) + ' was set up.')
 
 
     def add_plainMacTunnel(self, _sApn_, _dApn_):
