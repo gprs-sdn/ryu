@@ -1000,7 +1000,7 @@ class GPRSControll(app_manager.RyuApp):
         match = parser.OFPMatch(eth_dst=self.tid_out)
         actions = [parser.OFPActionOutput(self.path_out[0].port_out)]
         self.add_flow(dp, 300, match, actions, MAC_TUNNEL_TABLE)
-        LOG.debug('Rule for first forwarder in  path_out installed')
+        LOG.debug('Rule for first forwarder in  path_out installed, forwarderID: ' + str(dp.id))
 
 
 
@@ -1011,7 +1011,7 @@ class GPRSControll(app_manager.RyuApp):
             match = parser.OFPMatch(eth_dst=self.tid_out)
             actions = [parser.OFPActionOutput(node.port_out)]
             self.add_flow(dp, 300, match, actions, 0)
-            LOG.debug('installed rule on dumb transport forwarder on path_out ')
+            LOG.debug('installed rule on dumb transport forwarder on path_out, forwarderID: ' + str(dp.id))
 
 
         ##Last forwarder on the way OUT needs to set eth_dst to eth_addr of APN otherwise it wont be processed
@@ -1020,19 +1020,14 @@ class GPRSControll(app_manager.RyuApp):
         match = parser.OFPMatch(eth_dst=self.tid_out)
         actions = [ parser.OFPActionSetField(eth_dst=self.dApn.eth_addr), parser.OFPActionOutput(self.path_out[-1].port_out)]
         self.add_flow(dp, 300, match, actions, 0)
-        LOG.debug('installed rule on last forwarder on the path_out')
+        LOG.debug('installed rule on last forwarder on the path_out, forwarderID: ' + str(dp.id))
+
 
 
 
         LOG.debug('---------')
         LOG.debug('Way out done, proceeding to way in')
         LOG.debug('---------')
-
-
-
-
-
-
 
 
 
@@ -1044,7 +1039,7 @@ class GPRSControll(app_manager.RyuApp):
         match = parser.OFPMatch(eth_dst=self.tid_in)
         actions = [parser.OFPActionOutput(self.path_in[0].port_out)]
         self.add_flow(dp, 300, match, actions, MAC_TUNNEL_TABLE)
-        LOG.debug('Rule for first forwarder in path_in installed')
+        LOG.debug('Rule for first forwarder in path_in installed, forwarderID: ' + str(dp.id))
 
         ##Rules for 'dumb' forwarders
         for node in self.path_in[1:-1]:
@@ -1053,7 +1048,7 @@ class GPRSControll(app_manager.RyuApp):
             match = parser.OFPMatch(eth_dst=self.tid_in)
             actions = [parser.OFPActionOutput(node.port_out)]
             self.add_flow(dp, 300, match, actions, 0)
-            LOG.debug('installed rule on dumb transport forwarder on path_in')
+            LOG.debug('installed rule on dumb transport forwarder on path_in, forwarderID: ' + str(dp.id))
 
         ##Last forwarder on the way IN sends packet to table #4 where it's matched based on active PDP CNTs
         dp = dpset.get(self.path_in[-1].dpid)
@@ -1062,7 +1057,7 @@ class GPRSControll(app_manager.RyuApp):
         inst = [ parser.OFPInstructionGotoTable(OF_GPRS_TABLE_IN) ]
         req = parser.OFPFlowMod(datapath=dp, priority=500, match=match, instructions=inst, table_id=0)
         dp.send_msg(req)
-        LOG.debug('installed rule on last forwarder on the path_in')
+        LOG.debug('installed rule on last forwarder on the path_in, forwarderID: ' + str(dp.id))
 
         ACTIVE_TUNNELS.append(plainMacTunnel(self.sApn,self.dApn, self.tid_out, self.tid_in, self.path_out, self.path_in))
         LOG.debug('Tunnel between '+self.sApn.name+' and '+self.dApn.name + ' was set up.')
