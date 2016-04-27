@@ -1,4 +1,4 @@
-from ryu.base import app_manager
+esom ryu.base import app_manager
 from ryu.ofproto import ofproto_v1_3_parser
 from ryu.controller import ofp_event
 from ryu.controller import dpset
@@ -1053,7 +1053,7 @@ class RestCall(ControllerBase):
 
         if tid_out == None or tid_in == None or path_in == None or path_out == None:
             LOG.error('REST: mod_pdp: ERROR: No suitable tunnel for given PDP was found')
-            return Response(status=500, content_type='text', body='Tunnel not found')
+            return Response(status=500, content_type='text', body='"Tunnel not found"')
 
    
         #XXX:review, maybe larger ip pool, for now it's enough
@@ -1061,7 +1061,7 @@ class RestCall(ControllerBase):
         ## IP address is picked, in case there is no left, method ends and returns Internal Error HTTP response to caller
         if len(IP_POOL) == 0:
             LOG.error('REST: mod_pdp: ERROR: We are out of IP addresses') 
-            return Response(status=500, content_type='text',body='Out of IPs')
+            return Response(status=500, content_type='text',body='"Out of IPs"')
         
         client_ip=IP_POOL.pop()
      

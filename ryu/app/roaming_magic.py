@@ -42,7 +42,7 @@ import datetime
 
 ##logger
 ##Usage: LOG.debug() / LOG.warning() / LOG.error()
-LOG = logging.getLogger('ryu.app.experimenter_switch_in_progres.py')
+LOG = logging.getLogger('ryu.app.roaming_magic.py')
 
 ##Static definition of of ports for vGSN and BSS
 ##TODO: Remove static definition(Either self-discovery or Yang)
@@ -86,14 +86,13 @@ IP_POOL=[]
 for i in range(100,199):
     IP_POOL.append('172.20.85.'+str(i))
 
-
 ##List of APNs in network
 APN_POOL=[]
 
 ##List of BSSs in network
 #XXX:for now it's static
-BSS_POOL=['901-70-1-0']
-#BSS_POOL=['231-1-1-0']
+#BSS_POOL=['901-70-1-0']
+BSS_POOL=['231-01-1-0']
 
 ##List of active PDP CNTs
 ACTIVE_CONTEXTS = []
@@ -107,43 +106,43 @@ INACTIVE_TUNNELS=[]
 ##List of used Tunnel identifiers
 TID_POOL = []
 
-##Local MCC + MNC identifying oru network
+##Local MCC + MNC identifying our network
 MCC_MNC = '23101'
-
-##List of active (attached) subscribers
-ACTIVE_SUBSCRIBERS = []
-
-##XXX: todo fill with data from a file
-##List of all local subscribers (HLR)
-HLR = {} 
-HLR['231014450469959'] = 'Tibor'
-HLR['1234567'] = 'tester'
 
 ##List of roaming partners (controllers)
 ROAMING_PARTNERS = {}
 ROAMING_PARTNERS['12345'] = 'http://127.0.0.1:8080/gprs/'
 
-##Returns True, if roaming subscriber can attach to our network
-def get_roaming_data(imsi):
-
-    #if there is a roaming partner for this IMSI 
-    if ROAMING_PARTNERS.has_key(imsi[:5]):
-	url = ROAMING_PARTNERS[imsi[:5]]
-	url += 'roam_mm/cmd=att&imsi=' + imsi
+##Returns true, if roaming partner exists
+def roaming_partner_exists(imsi):
 	
+    if ROAMING_PARTNERS.has_key(imsi[:5]):
+	return True
+    return False
+
+##Returns IMSI, if roaming subscriber can attach to our network
+def get_roaming_data(id_type, id_value):
+    
+    #find a roaming partner for this IMSI/P-TMSI
+    if roaming_partner_exists(id_value):
+	url = ROAMING_PARTNERS[imsi[:5]]
+	
+	if id_type == 'imsi':
+		url += 'roam_mm/cmd=atti&imsi=' + id_value
+
+	elif id_type == 'p-tmsi':	
+		url += 'roam_mm/cmd=atti&p-tmsi=' + id_value
+
 	#ask the remote controller for approval 
 	result = urllib2.urlopen(url)
 	
-	#XXX: not parsing the json correctly, needs fixing
+	#XXX: not parsing the json correctly, needs fixing, maybe not
 	#data = json.load(result)
 	
 	if result.getcode() == 200:
 	    return True 	    
 
-	else: 
-	    return False
-
-    return False
+    return None
         
 ###Topology and topology-related classes
 
@@ -247,9 +246,11 @@ class topology():
 
         ##Links between edge forwarders and non-SDN nodes
         ##BSS node <-> 0xa
-        self.add_link('901-70-1-0',0xa,1)
-        self.add_link(0xa,'901-70-1-0',1)
-        #vGSN node <-> 0xa
+        #self.add_link('901-70-1-0',0xa,1)
+        #self.add_link(0xa,'901-70-1-0',1)
+	self.add_link('231-01-1-0',0xa,1)
+	self.add_link(0xa,'231-01-1-0',1)
+	#vGSN node <-> 0xa
         #XXX:self.add_link(1,0xa,1)
         #XXX:self.add_link(0xa,1,2)
         #internet <-> 0xc
@@ -489,14 +490,120 @@ class Subscriber():
     Keyword arguments:
 
     imsi -- International Mobile Subscriber Identity
-    location -- Routing Area Identity
-    roaming_allowed -- flag indicating if roaming is permitted for this subscriber
+    ptmsi -- Packet Temporary Mobile Subscriber Identity - optional
+    location -- Routing Area Identity - optional
+    roaming_allowed -- flag indicating if roaming is permitted for this subscriber - optional 
     """
-    def __init__(self, imsi, location, roaming_allowed):
+    def __init__(self, imsi, ptmsi, name, location=None, roaming_allowed=None):
 	self.imsi = imsi
+	self.ptmsi = ptmsi
+	self.name = name
 	self.location = location
 	self.roaming_allowed = roaming_allowed
 
+##Database of all local subscribers (HLR)
+##and active (attached)/inactive(formerly attached) subscribers
+class HLR():
+	
+    def __init__(self):
+    	#dictionary containing subscriber info, IMSI serves as the key 
+	#value is an object of Subscriber class
+	self.subscribers = {}
+
+	#dictionary of active MM contexts, IMSI serves as the key
+	#value is the P-TMSI of the MS 
+	self.active_subscribers = {}
+
+	#dictionary containing inactive (detached) MM contexts
+	#P-TMSI is used as the key
+	#IMSI is used as the value
+	self.inactive_subscribers = {} 
+   	
+	#XXX to support roaming
+	#list of local subscribers attached to a different PLMN but accessing Internet through their home "GGSN"
+	self.active_roaming_subscribers = {}
+
+ 
+    #returns True if MS exists in local HLR
+    def find_ms_by_imsi(self, imsi):
+	if self.subscribers.has_key(imsi):
+	    return True
+	return False
+  
+    #returns True if MM ctx exists 
+    def find_mm_ctx_by_imsi(self, imsi):
+        if self.active_subscribers.has_key(imsi):
+	    return True
+	return False 
+    	
+    #return IMSI if active/inactive MM context exists
+    def find_mm_ctx_by_ptmsi(self, ptmsi):
+	#find active MM ctx by P-TMSI
+	for imsi,ptmsi_old in self.active_subscribers.iteritems():
+	    if ptmsi == ptmsi_old:
+		return imsi
+	#find inactive MM ctx by P-TMSI
+	for imsi,ptmsi_old in self.inactive_subscribers.iteritems():
+	    if ptmsi == ptmsi_old:
+		return imsi
+ 	#no MM ctx found
+	return None
+
+    #creates MM contexts, returns P-TMSI if successful
+    def create_mm_ctx(self, imsi):
+	#check if an inactive MM ctx exists, if yes, make it active and generate new P-TMSI
+	
+	#delete any existing PDP contexts for this MS
+	#XXX verify
+	#XXX remove forwarder rules
+	for ctx in ACTIVE_CONTEXTS:
+	    if ctx.imsi == imsi:
+		ACTIVE_CONTEXTS.remove(ctx)
+
+	if self.inactive_subscribers.has_key(imsi):
+	    self.inactive_subscribers.pop(imsi, None)
+	    self.active_subscribers[imsi] = self.generate_ptmsi()
+	    return self.active_subscribers[imsi]
+	
+	#check if an active MM ctx exists and if yes, update P-TMSI
+	#XXX VERIFY IF THIS IS CORRECT 
+	elif self.active_subscribers.has_key(imsi):
+	    self.active_subscribers[imsi] = self.generate_ptmsi()
+	    return self.active_subscribers[imsi]
+
+	#create MM ctx, generate new P-TMSI	
+	else:
+	    self.active_subscribers[imsi] = self.generate_ptmsi()
+	    return self.active_subscribers[imsi]
+    
+    #returns random generated P-TMSI
+    def generate_ptmsi(self):
+	#generate random 4 byte P-TMSI
+	new_ptmsi =  hex(random.randint(0,4294967294) | 0xC0000000)
+	#check if it is unique
+	if not self.find_mm_ctx_by_ptmsi(new_ptmsi):
+	    return new_ptmsi
+	#if not, generate again
+	return self.generate_ptmsi()
+
+    #deletes MM ctx, returns True if sucessful
+    def delete_mm_ctx(self, p_tmsi):
+ 	#find MM ctx with P-TMSI in active contexts and make it inactive
+        #XXX deactivate PDP ctxts
+	for imsi,ptmsi_old in self.active_subscribers.iteritems():
+            if p_tmsi == ptmsi_old:
+	        self.active_subscribers.pop(imsi, None)
+		self.inactive_subscribers[imsi] = p_tmsi
+	    	return True
+	return False
+
+#XXX: add roaming capabilities 	
+#XXX: todo fill with data from a file
+##HLR initialization
+hlr = HLR()
+hlr.subscribers['231014450469959'] = Subscriber('231014450469959', None, 'Tibor', None, None)
+hlr.subscribers['231014453285311'] = Subscriber('231014453285311', None, 'Iva', None, None) 
+hlr.subscribers['1234567'] = Subscriber('1234567', None, 'tester', None, None)
 
 class GPRSControll(app_manager.RyuApp):
     """
@@ -536,9 +643,9 @@ class GPRSControll(app_manager.RyuApp):
                        conditions=dict(method=['GET']))
 
 
-        uri = path + '/pdp/{cmd}'
+        uri = path + '/sm/{cmd}'
         mapper.connect('stats',uri,
-                       controller=RestCall, action='mod_pdp',
+                       controller=RestCall, action='mod_sm',
                        conditions=dict(method=['GET']))
 
         uri = '/topology/dump'
@@ -669,7 +776,7 @@ class GPRSControll(app_manager.RyuApp):
    
             #################
             ## OF_GPRS-TABLE (2)
-            ##TODO: BSS <-> vGSS separate tunnel for communication!
+            ##TODO: BSS <-> vGSN separate tunnel for communication!
             ##TODO: deletion, modification od  PDP CNT
 
             ## if packet is not first segment  of user data packet (IS part of sndcp fragmented packet) it's DROPED
@@ -823,12 +930,10 @@ class GPRSControll(app_manager.RyuApp):
         ev.enter is False  -- Forwarder got disconnected  
         """
 
-
         dp = ev.dp
         ofp = dp.ofproto
         parser = dp.ofproto_parser
             
-
         if ev.enter is True:
             self.on_inner_dp_join(dp)
 	    ##For evry new forwarder we send out discovery ICMP packets out of every port except OFPP_CONTROLLER
@@ -848,13 +953,11 @@ class GPRSControll(app_manager.RyuApp):
             LOG.debug('TOPO MNGR: Forwarder: ' + str(dp.id) + ' is leaving topology. It was a pleasure for us!')
             topo.del_forwarder(dp.id)
 
-
     def retry_tunnels(self):
         """ 
              This is very similar to add_tunnel method...I'm too tired to make and call
              modified version of add_tunnel... 
         """
-
         ##Search inactive tunels to see if any path can be resolved now, if yes...do the same thing as add_tunnel()
         for inact_tunnel in INACTIVE_TUNNELS:
             try:
@@ -917,10 +1020,6 @@ class GPRSControll(app_manager.RyuApp):
             ACTIVE_TUNNELS.append(tunnel(inact_tunnel.bss, inact_tunnel.apn, self.tid_out, self.tid_in, self.path_out, self.path_in))
             LOG.debug('TOPO MNGR: Inactive tunnel between ' + str(inact_tunnel.bss) + ' and ' + str(inact_tunnel.apn.name) +' put into active state!')
 
-
-
-   
-
     def add_tunnel(self, _bss_, _apn_):
         """
         This method is called when new APN is discovered to connect it with all BSS stations via MAC Tunnels
@@ -930,7 +1029,6 @@ class GPRSControll(app_manager.RyuApp):
             _apn_ -- object of apn class representing APN in topology
             
         """
-
         self.bss = _bss_
         self.apn = _apn_
         self.tid_out = get_tid()
@@ -997,7 +1095,6 @@ class GPRSControll(app_manager.RyuApp):
         ACTIVE_TUNNELS.append(tunnel(self.bss,self.apn, self.tid_out, self.tid_in, self.path_out, self.path_in))
         LOG.debug('Tunnel between '+str(self.bss)+' and '+str(self.apn.name) + ' was set up.')
        
-
     def add_flow(self, dp, priority, match, actions, table=0):
         ofp = dp.ofproto
         parser = dp.ofproto_parser
@@ -1011,7 +1108,6 @@ class RestCall(ControllerBase):
     """
     This Class contains methods that can be executed via REST calls
     """
-
     def __init__(self, req, link, data, **config):
         super(RestCall, self).__init__(req, link, data, **config)
         self.dpset = data['dpset']
@@ -1033,7 +1129,6 @@ class RestCall(ControllerBase):
             response += '</BR>***Tunnel from: ' + tunnel.apn.name + ' to: ' + tunnel.bss + '***</BR>'
             for node in tunnel.path_in:
                 response += str(node.dpid) + ' via port: ' + str(node.port_out) +', '
-                
 
         response +=      '</BR><B>Inactive tunnels: </B>'
         for tunnel in INACTIVE_TUNNELS:
@@ -1043,8 +1138,6 @@ class RestCall(ControllerBase):
             response += '</BR>***Tunnel from: ' + tunnel.apn.name + ' to: ' + tunnel.bss + '***</BR>'
             for node in tunnel.path_in:
                 response += str(node.dpid) + ' via port: ' + str(node.port_out) +',' 
-
-
 
         response +=      '</BR><B>Static topology graph nodes:  </B>' + str(topo.StaticGraph.nodes())
         response +=      '</BR><B>Dynamic topology graph nodes: </B>' + str(topo.DynamicGraph.nodes())
@@ -1066,7 +1159,6 @@ class RestCall(ControllerBase):
            and (BSS_EDGE_FORWARDER[0] in topo.StaticGraph) and (BSS_EDGE_FORWARDER[0] in topo.DynamicGraph) \
            and (INET_EDGE_FORWARDER[0] in topo.StaticGraph) and (INET_EDGE_FORWARDER[0] in topo.DynamicGraph) \
            and len(path_out) and len(path_in):
-            
 
             response += '</BR><B>Path to the Internet:  </B>' + str(path_out)
             response += '</BR><B>Path to the GPRS edge: </B>' + str(path_in)
@@ -1080,7 +1172,6 @@ class RestCall(ControllerBase):
         else:
             response += '<H2 style="color:orange"> USER-PLANE TUNNELS NOT PRESENT </H2>'
 
-
         LOG.debug('STATUS DUMP: Dumping Topology state at /test/info URL!')
         return (response)
 
@@ -1090,91 +1181,175 @@ class RestCall(ControllerBase):
 	
     def mod_gmm (self, req, cmd):
 	LOG.debug('REST: mod_gmm: Modification of GMM called')	
+	
 	#parse GET parameters out of REST call
 	body = urlparse.parse_qs(cmd)
-	
 	action = str(body.get('cmd'))[3:-2]
-	imsi = str(body.get('imsi'))[3:-2]
-	LOG.debug('IMSI is :' + imsi)
 	
 	#if the MS wants to attach
-	if action == 'att':
-	  
-	    #check IMSI & our MCC+MNC
-	    if imsi[:5] == MCC_MNC:
-		#if subscriber is from out network, let's find him in the HLR
-		if HLR.has_key(imsi):
-		    ACTIVE_SUBSCRIBERS.append(HLR[imsi])
-		    return Response(status=200, content_type='text', body='Attach permitted')
-		#unknown IMSI
-		else:
-		    return Response(status=500, content_type='text', body='IMSI unknown in local HLR')
-	    
-	    #subscriber is roaming
-	    else:
-		LOG.debug("REST: mod_gmm: IMSI not local, asking remote controller")
-		#ask another controller
-		roaming_approved = get_roaming_data(imsi)
-	
-		if roaming_approved:
-		    LOG.debug('REST: mod_gmm: Roaming attach permitted for IMSI: ' + imsi)
-		    return Response(status=200, content_type='text', body='Roaming attach permitted')
-		
-		else:
-		    LOG.debug('REST: mod_gmm: Roaming attach not permitted / IMSI not existing / Roaming controller not existing')
-		    return Response(status=500, content_type='text', body='IMSI unknown in remote HLR')
-	
-		#XXX: no remote controller for given IMSI
-		#XXX: subscriber not in remote controller database
-		#XXX: subscriber not allowed to roam
+	if action[:3] == 'att':
+	    #attach with IMSI	
+	    if action == 'atti':
+		imsi = str(body.get('imsi'))[3:-2]
+		#check IMSI & our MCC+MNC
+            	if imsi[:5] == MCC_MNC:
+		    #if subscriber is from out network, let's find him in the HLR
+                    if hlr.find_ms_by_imsi(imsi):
+                    	ptmsi = hlr.create_mm_ctx(imsi)
+                    	LOG.debug('REST: mod_gmm: Attach successful with IMSI: ' + imsi)
+			return Response(status=200, content_type='application/json', body='{"cmd":"atti","result":"success", "imsi":"'+imsi+'","p-tmsi":"'+ptmsi+'"}')
+		    #unknown IMSI
+                    else:
+                    	LOG.debug('REST: mod_gmm: Attach not successful with IMSI: ' + imsi)
+                    	#return Response(status=500, content_type='text', body='"IMSI unknown in local HLR"')
+			return Response(status=200, content_type='application/json', body='{"cmd":"atti","result":"fail", "imsi":"'+imsi+'"}')
+	   	#subscriber is roaming
+	        else:
+                    LOG.debug("REST: mod_gmm: IMSI not local, asking remote controller")
+                    #ask another controller
+                    if roaming_partner_exists(imsi):
+		        LOG.debug("REST: mod_gmm: Roaming partner found for IMSI: " + imsi) 
+			roaming_approved = get_roaming_data('imsi', imsi)
+		    else:
+		        LOG.debug("REST: mod_gmm: Roaming partner does not exist for IMSI: " + imsi) 
+			#return Response(status=500, content_type='text', body='"No remote HLR found for IMSI: '+imsi+'"')	
+			return Response(status=200, content_type='application/json', body='{"cmd":"atti","result":"fail","imsi":"'+imsi+'"}')			
+			#XXX
+		    if roaming_approved:
+			ptmsi = hlr.create_mm_ctx(roaming_approved)
+                    	LOG.debug('REST: mod_gmm: Roaming attach permitted for IMSI: ' + imsi)
+			return Response(status=200, content_type='application/json', body='{"cmd":"atti","result":"success","imsi":"'+imsi+'","p-tmsi":"'+ptmsi+'"}')
 
+                    else:
+                    	LOG.debug('REST: mod_gmm: Roaming attach not permitted / IMSI not existing')
+                    	#return Response(status=500, content_type='text', body='"IMSI unknown in remote HLR or roaming not permitted"')
+			return Response(status=200, content_type='application/json', body='{"cmd":"atti","result":"fail","imsi":"'+imsi+'"}')
+	    #attach with P-TMSI and old RAI
+	    elif action == 'attp':
+		p_tmsi = str(body.get('p-tmsi'))[3:-2]	
+		old_rai = str(body.get('rai'))[3:-2]
+	   	rai = old_rai.split('-')
+		
+		#if MNC is one digit long, we prepend a zero to it
+		if len(rai[1]) == 1:
+			rai[1] = '0' + rai[1]
+		#combine MCC + MNC
+		net_id = rai[0] + rai[1]
+		
+		#check of old RAI is local and find the IMSI for the P-TMSI
+		if net_id == MCC_MNC: 
+		    imsi = hlr.find_mm_ctx_by_ptmsi(p_tmsi)
+		    if imsi:
+			#check if IMSI is local?
+			if imsi[:5] == MCC_MNC:
+			    ptmsi = hlr.create_mm_ctx(imsi)
+			    return Response(status=200, content_type='application/json', body='{"cmd":"attp","result":"success","imsi":"'+imsi+'","p-tmsi":"'+ptmsi+'"}')
+		    	#contact roaming partner's controller
+			else:
+			    if roaming_partner_exists(imsi):
+                        	LOG.debug("REST: mod_gmm: Roaming partner found for IMSI: " + imsi)
+                        	roaming_approved = get_roaming_data('imsi', imsi)
+		    	    else:
+				LOG.debug("REST: mod_gmm: Roaming partner does not exist for IMSI: " + imsi)
+				return Response(status=200, content_type='application/json', body='{"cmd":"attp","result":"fail","p-tmsi":"'+p_tmsi+'"}')
+		    	    if roaming_approved:
+				ptmsi = hlr.create_mm_ctx(roaming_approved)
+				OG.debug('REST: mod_gmm: Roaming attach permitted for IMSI: ' + roaming_approved)
+				return Response(status=200, content_type='application/json', body='{"cmd":"attp","result":"success","imsi":"'+imsi+'","p-tmsi":"'+ptmsi+'"}')
+		    #P-TMSI unknown in local HLR, respond with error
+		    else:
+			return Response(status=200, content_type='application/json', body='{"cmd":"attp","result":"fail","p-tmsi":"'+p_tmsi+'"}')
+		else:
+		    #the old RAI is foreign, try to get IMSI from the foreign controller
+		    if roaming_partner_exists(net_id):
+                        LOG.debug("REST: mod_gmm: Roaming partner found for RAI: " + old_rai)
+                        imsi = get_roaming_data('p-tmsi', p_tmsi)
+		    else:
+                        LOG.debug("REST: mod_gmm: Roaming partner does not exist for P-TMSI: " + p_tmsi)
+                       	return Response(status=200, content_type='application/json', body='{"cmd":"attp","result":"fail","p-tmsi":"'+p_tmsi+'"}')
+		    #if the subscriber is known in remote controller 
+		    if imsi:
+			#XXX do we need to check if IMSI is local?
+                        LOG.debug('REST: mod_gmm: IMSI found for P-TMSI: ' + p-tmsi)
+                        ptmsi = hlr.create_mm_ctx(imsi) 
+			return Response(status=200, content_type='application/json', body='{"cmd":"attp","result":"success","imsi":"'+imsi+'","p-tmsi":"'+ptmsi+'"}') 
+                    else:
+			LOG.debug('REST: mod_gmm: Roaming attach not permitted / IMSI not existing')
+			return Response(status=200, content_type='application/json', body='{"cmd":"attp","result":"fail","p-tmsi":"'+p_tmsi+'"}')
+	    #unknown type of attach	
+	    else:
+		return Response(status=500, content_type='text', body='"Error in URI"')
 
 	#if MS wants to detach
 	elif action == 'det':
-		#XXX: remove from active subscribers and tear down active tunnels, notify HPLMN CNT if MS is a roamer
-		return Response(status=500, content_type='text', body='Feature not implemented yet')
+	    p_tmsi = str(body.get('p-tmsi'))[3:-2]
+	    
+	    if hlr.find_mm_ctx_by_ptmsi(p_tmsi):
+		hlr.delete_mm_ctx(p_tmsi)
+		return Response(status=200, content_type='text', body='"Detach successful for P-TMSI: '+ p_tmsi +'"')
+	    #XXX: tear down active tunnels if any
+	    #XXX: notify home controller if the MS is foreign
+	    return Response(status=500, content_type='text', body='"Feature not implemented yet"')
 	
 	#if MS wants to perform an inter SGSN RAU
 	elif action == 'rau':
 		#XXX: add support for inter SGSN RAU
-		return Response(status=500, content_type='text', body='Feature not implemented yet')
+		return Response(status=500, content_type='text', body='"Feature not implemented yet"')
 	
 	#unknown action
 	else:
-	    return Response(status=500, content_type='text', body='Error in URL')
+	    return Response(status=500, content_type='text', body='"Error in URL"')
     
     def mod_roam_mm (self, req, cmd):
-	#XXX:validate if IMSI is local
 	
 	LOG.debug('REST: mod_gmm: Modification of roaming GMM called')
         #parse GET parameters out of REST call
         body = urlparse.parse_qs(cmd)
-
         action = str(body.get('cmd'))[3:-2]
-        imsi = str(body.get('imsi'))[3:-2]
-	
-	##if our subscriber wants to attach in a VPLMN
-	if action == 'att':
-	
-	    if HLR.has_key(imsi):
-		return (Response(content_type='application/json', body='{"imsi":"'+imsi+'}'))
+        
+        if action[:3] == 'att':	
+	    ##if our subscriber wants to attach in a VPLMN with IMSI
+	    if action == 'atti':
+	        imsi = str(body.get('imsi'))[3:-2]
+		#validate if IMSI is local
+		if imsi[:5] != MCC_MNC:
+	    	    return Response(status=500, content_type='text', body='"IMSI not from this remote network"') 
 	    
-	    else:
-		Response(status=500, content_type='text', body='IMSI unknown in remote HLR')
+		if hlr.find_ms_by_imsi(imsi):
+	   	#XXX: add me to a list of ACTIVE ROAMING SUBSCRIBERS
+		    return Response(content_type='application/json', body='{"imsi":"'+imsi+'"}')
+	    	else:
+		    return Response(status=500, content_type='text', body='"IMSI unknown in remote HLR"')
+	    
+	    ##if a subscriber wants to attach in a VPLMN with P-TMSI generated in this PLMN
+	    elif action == 'attp':	
+		#XXX append to list of active roaming subscribers if his imsi is local?
+		ptmsi = str(body.get('p-tmsi'))[3:-2]
+		imsi = hlr.find_mm_ctx_by_ptmsi(ptmsi)
+		if imsi:
+		    return Response(content_type='application/json', body='{"imsi":"'+imsi+'"}')
+		else:
+		    return Response(status=500, content_type='text', body='"P-TMSI unknown in remote HLR"')
+	
+	elif action == 'det':
+	    #XXX:finish me
+	    #XXX remove from ACTIVE ROAMING SUBSCRIBERS and tear the tunnels down
+	    return
 	else:
-	    return Response(status=500, content_type='text', body='Error in URL')
+	    return Response(status=500, content_type='text', body='"Error in URL"')
 	
     def mod_roam_sm (self, req, cmd):
+	#XXX: verify if user is attached in the roaming network - active roaming subscribers
+	#XXX: add support for tunnel creation
+	#XXX: add support for tunnel teardown
 	return 
 
-    def mod_pdp (self, req, cmd):
-        LOG.debug('REST: mod_pdp: Modification of PDP called')
+    def mod_sm (self, req, cmd):
+        LOG.debug('REST: mod_sm: Modification of PDP called')
         #parsing GET parameters out of REST call
         body = urlparse.parse_qs(cmd)
-        
-        ##TODO:Change vGSN to make REST call in format where 'cmd' is paired with value, for now we assume cmd=add
-        #parse_qs method returns results with garbage around, this ugly hack cuts it away [3:-2]
-        start = str(body.get('rai'))[3:-2]
+        action = str(body.get('cmd'))[3:-2]
+	start = str(body.get('rai'))[3:-2]
         end = str(body.get('apn'))[3:-2]
         imsi = str(body.get('imsi'))[3:-2]
         bvci = int(str(body.get('bvci'))[3:-2])
@@ -1182,94 +1357,103 @@ class RestCall(ControllerBase):
         drx_param = int(str(body.get('drx_param'))[3:-2], 16)
         sapi = int(str(body.get('sapi'))[3:-2])
         nsapi = int(str(body.get('nsapi'))[3:-2])
+	
+	#verify if the MS is attached
+	if not (hlr.find_mm_ctx_by_imsi(imsi)): 
+	    LOG.error('REST: mod_sm: ERROR: Subscriber with IMSI: ' + imsi + ' not attached in controller')
+	    return Response(status=500, content_type='text', body='"Subscriber not attached in controller. No SM actions possible."')	
 
+	if action == 'add':
+            tid_out=None
+            tid_in=None
+            path_in=None
+            path_out=None
+            #XXX:How about a HTTP response to vGSN if required tunnel doesnt exist?
+            ## We find tunnel that matches criteria from Activate PDP context request
+            for act_tunnel in ACTIVE_TUNNELS:
+                if start == act_tunnel.bss and end == act_tunnel.apn.name:
+                    tid_out = act_tunnel.tid_out
+                    tid_in = act_tunnel.tid_in
+                    path_in =  act_tunnel.path_in
+                    path_out = act_tunnel.path_out
+                    LOG.debug('REST: mod_sm: Tunnel was found')
+                    break
 
-        tid_out=None
-        tid_in=None
-        path_in=None
-        path_out=None
-        #XXX:How about a HTTP response to vGSN if required tunnel doesnt exist?
-        ## We find tunnel that matches criteria from Activate PDP context request
-        for act_tunnel in ACTIVE_TUNNELS:
-            if start == act_tunnel.bss and end == act_tunnel.apn.name:
-                tid_out = act_tunnel.tid_out
-                tid_in = act_tunnel.tid_in
-                path_in =  act_tunnel.path_in
-                path_out = act_tunnel.path_out
-                LOG.debug('REST: mod_pdp: Tunnel was found')
-                break
-
-        if tid_out == None or tid_in == None or path_in == None or path_out == None:
-            LOG.error('REST: mod_pdp: ERROR: No suitable tunnel for given PDP was found')
-            return Response(status=500, content_type='text', body='Tunnel not found')
+            if tid_out == None or tid_in == None or path_in == None or path_out == None:
+                LOG.error('REST: mod_sm: ERROR: No suitable tunnel for given PDP was found')
+                return Response(status=500, content_type='text', body='"Tunnel not found"')
 
    
-        #XXX:review, maybe larger ip pool, for now it's enough
-        #TODO:in case on CNT deactivation, return IP to pool
-        ## IP address is picked, in case there is no left, method ends and returns Internal Error HTTP response to caller
-        if len(IP_POOL) == 0:
-            LOG.error('REST: mod_pdp: ERROR: We are out of IP addresses') 
-            return Response(status=500, content_type='text',body='Out of IPs')
+            #XXX:review, maybe larger ip pool, for now it's enough
+            ## IP address is picked, in case there is no left, method ends and returns Internal Error HTTP response to caller
+            if len(IP_POOL) == 0:
+                LOG.error('REST: mod_sm: ERROR: We are out of IP addresses') 
+                return Response(status=500, content_type='text',body='"Out of IPs"')
         
-        client_ip=IP_POOL.pop()
+            client_ip=IP_POOL.pop()
      
-        #TODO: Handling of 'cmd' value
-        ACTIVE_CONTEXTS.append( PDPContext(bvci, tlli, sapi, nsapi, tid_out, tid_in, client_ip, imsi, drx_param) )
+            ACTIVE_CONTEXTS.append( PDPContext(bvci, tlli, sapi, nsapi, tid_out, tid_in, client_ip, imsi, drx_param) )
         
-        ###WAY OUT
-        ##First node on the way OUT removes GPRS headers, sets eth addr. to appropriate tunnel ID
-        ##and sends packet to table MAC_TUNNEL_TABLE
-        ##In_port of packet on first node on its way OUT is equal to the port_out of last node on the way IN, therfore in_port=path_in[-1].port_out
-        dp = self.dpset.get(path_out[0].dpid)
-        parser = dp.ofproto_parser
-        ofp = dp.ofproto
-        match = parser.OFPMatch( in_port=path_in[-1].port_out,
-                                 ns_type=0,
-                                 ns_bvci=bvci, 
-                                 bssgp_tlli=tlli, 
-                                 llc_sapi=sapi, 
-                                 sndcp_nsapi=nsapi)
+            ###WAY OUT
+            ##First node on the way OUT removes GPRS headers, sets eth addr. to appropriate tunnel ID
+            ##and sends packet to table MAC_TUNNEL_TABLE
+            ##In_port of packet on first node on its way OUT is equal to the port_out of last node on the way IN, therfore in_port=path_in[-1].port_out
+            dp = self.dpset.get(path_out[0].dpid)
+            parser = dp.ofproto_parser
+            ofp = dp.ofproto
+            match = parser.OFPMatch( in_port=path_in[-1].port_out,
+                                     ns_type=0,
+                                     ns_bvci=bvci, 
+                                     bssgp_tlli=tlli, 
+                                     llc_sapi=sapi, 
+                                     sndcp_nsapi=nsapi)
 
-        actions = [GPRSActionPopGPRSNS(), GPRSActionPopUDPIP(),
-                   parser.OFPActionSetField(eth_src=tid_in),parser.OFPActionSetField(eth_dst=tid_out)]
-        inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions), parser.OFPInstructionGotoTable(MAC_TUNNEL_TABLE)]                   
-        req = parser.OFPFlowMod(datapath=dp, priority=100, match=match, instructions=inst, table_id = OF_GPRS_TABLE)
-        dp.send_msg(req)
+            actions = [GPRSActionPopGPRSNS(), GPRSActionPopUDPIP(),
+                       parser.OFPActionSetField(eth_src=tid_in),parser.OFPActionSetField(eth_dst=tid_out)]
+            inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions), parser.OFPInstructionGotoTable(MAC_TUNNEL_TABLE)]                   
+            req = parser.OFPFlowMod(datapath=dp, priority=100, match=match, instructions=inst, table_id = OF_GPRS_TABLE)
+            dp.send_msg(req)
 
 
-        ###WAY IN
-        ##On the way IN we need to match packet on both first and last forwarder
-        ##First forwarder matches Clients IP to determine appropriate tunnel
-        ##for first in_port match aplies same rule as on the way out: in_port=path_out[-1].port_out
-        dp = self.dpset.get(path_in[0].dpid)
-        parser = dp.ofproto_parser
-        ofp = dp.ofproto
-        match = parser.OFPMatch(in_port=path_out[-1].port_out,
-                                eth_type=0x0800,
-                                ipv4_dst=client_ip)
-        actions = [ parser.OFPActionSetField(eth_dst=tid_in), parser.OFPActionSetField(eth_src=tid_out) ]
-        inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions), parser.OFPInstructionGotoTable(MAC_TUNNEL_TABLE)]
-        req = parser.OFPFlowMod(datapath=dp, priority=300, match=match, instructions=inst, table_id = 0)
-        dp.send_msg(req)
+            ###WAY IN
+            ##On the way IN we need to match packet on both first and last forwarder
+            ##First forwarder matches Clients IP to determine appropriate tunnel
+            ##for first in_port match aplies same rule as on the way out: in_port=path_out[-1].port_out
+            dp = self.dpset.get(path_in[0].dpid)
+            parser = dp.ofproto_parser
+            ofp = dp.ofproto
+            match = parser.OFPMatch(in_port=path_out[-1].port_out,
+                                    eth_type=0x0800,
+                                    ipv4_dst=client_ip)
+            actions = [ parser.OFPActionSetField(eth_dst=tid_in), parser.OFPActionSetField(eth_src=tid_out) ]
+            inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions), parser.OFPInstructionGotoTable(MAC_TUNNEL_TABLE)]
+            req = parser.OFPFlowMod(datapath=dp, priority=300, match=match, instructions=inst, table_id = 0)
+            dp.send_msg(req)
      
-        dp = self.dpset.get(path_in[-1].dpid)
-        parser = dp.ofproto_parser
-        ofp = dp.ofproto
+            dp = self.dpset.get(path_in[-1].dpid)
+            parser = dp.ofproto_parser
+            ofp = dp.ofproto
         
-        ##XXX:Setfield eth_dst is ahrdcoded to work with our BTS!
-        ##Last forwarder machtes Clients IP to push appropriate GPRS headers and determine port_out
-        match = parser.OFPMatch(eth_type=0x0800,
-                                ipv4_dst=client_ip)
-        actions=[ GPRSActionPushGPRSNS(bvci, tlli, sapi, nsapi, drx_param, imsi),
-                  GPRSActionPushUDPIP(sa=VGSN_IP, da=BSS_IP, sp=VGSN_PORT, dp=BSS_PORT),
-                  parser.OFPActionSetField(eth_dst='00:d0:cc:08:02:ba'),
-                  parser.OFPActionOutput(path_in[-1].port_out)]
-        inst=[ parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions) ]
+            ##XXX:Setfield eth_dst is hardcoded to work with our BTS!
+            ##Last forwarder machtes Clients IP to push appropriate GPRS headers and determine port_out
+            match = parser.OFPMatch(eth_type=0x0800,
+                                    ipv4_dst=client_ip)
+            actions=[ GPRSActionPushGPRSNS(bvci, tlli, sapi, nsapi, drx_param, imsi),
+                      GPRSActionPushUDPIP(sa=VGSN_IP, da=BSS_IP, sp=VGSN_PORT, dp=BSS_PORT),
+                      parser.OFPActionSetField(eth_dst='00:d0:cc:08:02:ba'),
+                      parser.OFPActionOutput(path_in[-1].port_out)]
+            inst=[ parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions) ]
  
-        req = parser.OFPFlowMod(datapath=dp, priority=100, match=match, instructions=inst, table_id = OF_GPRS_TABLE_IN)
-        dp.send_msg(req)
+            req = parser.OFPFlowMod(datapath=dp, priority=100, match=match, instructions=inst, table_id = OF_GPRS_TABLE_IN)
+            dp.send_msg(req)
 
-        return (Response(content_type='application/json', body='{"address":"'+client_ip+'","dns1":"8.8.8.8","dns2":"8.8.8.8"}'))
+            return (Response(content_type='application/json', body='{"address":"'+client_ip+'","dns1":"8.8.8.8","dns2":"8.8.8.8"}'))
+	
+	#XXX:add support for PDP CTX deactivation
+	elif action == 'del':
+            #TODO:in case on CNT deactivation, return IP to pool
+	    #TODO: remove rules from forwarders
+	    return
 
     def add_flow(self, dp, priority, match, actions, table = 0):
         ofp = dp.ofproto
