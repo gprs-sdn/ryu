@@ -49,12 +49,14 @@ LOG = logging.getLogger('ryu.app.roaming_magic.py')
 BSS_PHY_PORT = 1
 VGSN_PHY_PORT = 2
 INET_PHY_PORT = None
+ROAMING_PHY_PORT = None
 
 ##IP adresses used when controller generates packets
 DISCOVERY_IP_SRC='10.1.1.252'
 DISCOVERY_IP_DST='10.1.1.253'
 ##Due to nature of ARP protocol, DISCOVERY_ARP_IP must be in same subnet as host you want to discover
 DISCOVERY_ARP_IP='172.20.255.99'
+#DISCOVERY_ARP_IP='172.21.255.99'
 SNDCP_FRAG_WARNING_SRC_IP='224.42.42.3'
 
 ##Experimenter ID (self-assigned)
@@ -70,29 +72,44 @@ OF_GPRS_TABLE_IN = 4
 MAC_TUNNEL_TABLE = 3
 
 ##Hardcode IP adresses of our GPRS nodes
-BSS_IP="192.168.27.125"
-BSS_PORT=23000
+BSS_IP="192.168.25.1"
+BSS_PORT=22000
+BSS_MAC = "de:aa:05:32:b9:01"
+#open('/sys/class/net/bss1/address').read()
+LOG.debug('BSS MAC ADDRESS IS: %s' % BSS_MAC)
+
 VGSN_IP="192.168.27.2"
+#VGSN_MAC="16:7d:bd:e4:6c:5c"
+VGSN_MAC = open('/sys/class/net/vgsn1/address').read()
+LOG.debug('vGSN MAC ADDRESS IS: %s' % VGSN_MAC)
+
+#VGSN_IP="192.168.28.2"
 VGSN_PORT=23000
 
 ##Forwarders assigned to special groups
 ##XXX:Review usefulness
 BSS_EDGE_FORWARDER=[0xa]
 INET_EDGE_FORWARDER=[0xc]
+ROAMING_EDGE_FORWARDER=[0xb]
 
 ##Generation of IP adresses  asigned to devices on PDP CNT actiavation
 ##XXX:Modify pool if needed
 IP_POOL=[]
 for i in range(100,199):
     IP_POOL.append('172.20.85.'+str(i))
+#    IP_POOL.append('172.21.85.'+str(i))
 
 ##List of APNs in network
 APN_POOL=[]
 
+##List containing IP and MAC addresses to contact roaming partners' APNs
+ROAMING_APN_POOL=[]
+
 ##List of BSSs in network
 #XXX:for now it's static
 #BSS_POOL=['901-70-1-0']
-BSS_POOL=['231-01-1-0']
+#BSS_POOL=['231-01-1-0']
+BSS_POOL = []
 
 ##List of active PDP CNTs
 ACTIVE_CONTEXTS = []
@@ -108,10 +125,12 @@ TID_POOL = []
 
 ##Local MCC + MNC identifying our network
 MCC_MNC = '23101'
+#MCC_MNC = '90170'
 
 ##List of roaming partners (controllers)
 ROAMING_PARTNERS = {}
-ROAMING_PARTNERS['12345'] = 'http://127.0.0.1:8080/gprs/'
+ROAMING_PARTNERS['90170'] = 'http://192.168.28.1:8080/gprs/'
+#ROAMING_PARTNERS['23101'] = 'http://192.168.27.1:8080/gprs/'
 
 ##Returns true, if roaming partner exists
 def roaming_partner_exists(imsi):
@@ -121,29 +140,68 @@ def roaming_partner_exists(imsi):
     return False
 
 ##Returns IMSI, if roaming subscriber can attach to our network
-def get_roaming_data(id_type, id_value):
+def get_roaming_data(id_type, id_value, action, url):
     
     #find a roaming partner for this IMSI/P-TMSI
-    if roaming_partner_exists(id_value):
-	url = ROAMING_PARTNERS[imsi[:5]]
-	
+    if action == 'att':
+
+	#XXX add new rai	
 	if id_type == 'imsi':
 		url += 'roam_mm/cmd=atti&imsi=' + id_value
 
 	elif id_type == 'p-tmsi':	
-		url += 'roam_mm/cmd=atti&p-tmsi=' + id_value
+		url += 'roam_mm/cmd=attp&p-tmsi=' + id_value
+    
+    elif action == 'det':	
+		url += 'roam_mm/cmd=det&imsi=' + id_value
 
-	#ask the remote controller for approval 
-	result = urllib2.urlopen(url)
-	
-	#XXX: not parsing the json correctly, needs fixing, maybe not
-	#data = json.load(result)
-	
-	if result.getcode() == 200:
-	    return True 	    
+    LOG.debug('GMM get_roaming_data URL: ' + url)	
+    #ask the remote controller for approval 
+    result = urllib2.urlopen(url)
+    if result.getcode() != 200:
+	return None
 
+    data = json.loads(result.read())
+    LOG.debug(str(data))
+    if data['result'] == 'success':
+	return data['imsi']
     return None
-        
+
+#Returns true, if roaming partner succesfully builds/destroys tunnels (and rules) for his MS    
+def get_roaming_tunnel(action, imsi, apn):
+    if roaming_partner_exists(imsi[:5]):
+	#activate PDP context
+	if action == 'add':
+	    url = ROAMING_PARTNERS[imsi[:5]]
+	    url += 'roam_sm/cmd=add&imsi=' + imsi + '&apn=' + apn.name 
+	    
+	    LOG.debug('SM get_roaming_tunnel URL: ' + url)    
+            #ask the roaming partner's controller to create rules
+	    result = urllib2.urlopen(url)
+		
+	    data = json.loads(result.read())
+	    LOG.debug(str(data))
+	    if result.getcode() == 200:
+	        return data['address']
+	    return None
+	
+	#deactivate PDP context
+	elif action == 'del':
+	    url = ROAMING_PARTNERS[imsi[:5]]
+	    url += 'roam_sm/cmd=del&imsi=' + imsi + '&apn=' + apn.name + '&address=' + ip_addr
+		
+	    LOG.debug('SM get_roaming_tunnel URL: ' + url)
+	    #ask the roaming partner's controller to delete rules
+	    result = urllib2.urlopen(url)
+	    
+	    data = json.loads(result.read())
+	    LOG.debig(str(data))
+	    if result.getcode() == 200:
+		return True
+	    return None    
+    #bad URL or failed command 
+    return None
+ 
 ###Topology and topology-related classes
 
 class link:
@@ -166,14 +224,14 @@ class tunnel:
  
     Keyword arguments:
 
-        _bss_ -- BSS endpoint idetifier in topology (can be string)
+        _bss_ -- BSS endpoint idetifier in topology (must be of bss class)
         _apn_ -- APN endpoint (must be of apn class)
         tid_out -- Tunnel identifier in outgoing direction (MAC addr. format)
         tid_in -- Tunnel identifier in incoming dirrection (MAC addr. format)
         path_out -- list of links for outgoing direction
         path_in -- list of links for incoming direction
     """
-    def __init__(self,_bss_, _apn_, _tid_out, _tid_in, path_out=None, path_in=None):
+    def __init__(self, _bss_, _apn_, _tid_out, _tid_in, path_out=None, path_in=None):
       self.bss = _bss_
       self.apn = _apn_
       self.tid_out = _tid_out
@@ -184,7 +242,7 @@ class tunnel:
 
 class apn:
     """
-    Acces point defined by its name, IP and mac addr. APN's only mandatory arg. is name
+    Access point defined by its name, IP and mac addr. APN's only mandatory arg. is name
     IP and mac addr. are resolved with DNS/ARP provided there is DNS entry available
 
     Keyword arguments:
@@ -197,10 +255,29 @@ class apn:
         self.ip_addr = ip_addr
         self.eth_addr = eth_addr
 
+class bss:
+    """
+    BSS defined by its name, which equals to its MCC-MNC-LAC-RAC, ITS IP and MAC addresses. BSS's  mandatory arg. is name and IP address.
 
+    Keyword arguments:
+        name -- MCC-MNC-LAC-RAC (string)
+        ip_addr -- IP address of APN
+        eth_addr -- MAC address of APN
+    """
+    def __init__(self, name, ip_addr, eth_addr=None):
+	self.name = name
+	self.ip_addr = ip_addr
+	self.eth_addr = eth_addr
+    
 ##XXX:maybe should be created from config file (Yang?)
 APN_POOL.append(apn('internet'))
+#ip address of the next VM
+#mac address of the next VM
 
+BSS_POOL.append(bss('231-1-10-0', BSS_IP))
+#BSS_POOL.append(bss('901-70-1-0', BSS_IP))
+ROAMING_APN_POOL.append(apn('90170', '192.168.28.1', '08:00:27:eb:88:a7'))
+#ROAMING_APN_POOL.append(apn('23101', '192.168.27.1', '08:00:27:eb:88:a7'))
 
 class topology():
     """ 
@@ -248,8 +325,15 @@ class topology():
         ##BSS node <-> 0xa
         #self.add_link('901-70-1-0',0xa,1)
         #self.add_link(0xa,'901-70-1-0',1)
-	self.add_link('231-01-1-0',0xa,1)
-	self.add_link(0xa,'231-01-1-0',1)
+	self.add_link('231-1-10-0',0xa,1)
+	self.add_link(0xa,'231-1-10-0',1)
+
+	#Roaming link to other PLMN (91070) <-> 0xb
+	self.add_link(0xc, '90170', 4)
+ 	self.add_link('90170', 0xc, 0)	
+	#self.add_link(0xc,'23101',4)
+	#self.add_link('23101',0xc,0)
+
 	#vGSN node <-> 0xa
         #XXX:self.add_link(1,0xa,1)
         #XXX:self.add_link(0xa,1,2)
@@ -344,6 +428,8 @@ def _arp_send(dp, port_out, arp_code,  ip_sender, ip_target, eth_dst='ff:ff:ff:f
         eth_target -- Final recipients Ethernet address(in case of request, zeroed out address is used)
         ip_target --  Final recipients IP address
     """
+    LOG.debug('Eth dst: ' +eth_dst+ ' eth_src:  eth_target: ' +eth_target)
+
 
     ofp = dp.ofproto
     parser = dp.ofproto_parser
@@ -364,6 +450,9 @@ def _arp_send(dp, port_out, arp_code,  ip_sender, ip_target, eth_dst='ff:ff:ff:f
     
     eth = ethernet.ethernet(eth_dst, eth_src, ether.ETH_TYPE_ARP)
     arp_req = arp.arp_ip(arp_code, eth_src, ip_sender, eth_target, ip_target)
+    if eth_target == VGSN_MAC:
+	eth = ethernet.ethernet(eth_dst, eth_target, ether.ETH_TYPE_ARP)
+    	arp_req = arp.arp_ip(arp_code, eth_target, ip_sender, eth_target, ip_target)
 
     pkt = packet.Packet()
     pkt.add_protocol(eth)
@@ -519,9 +608,8 @@ class HLR():
 	#IMSI is used as the value
 	self.inactive_subscribers = {} 
    	
-	#XXX to support roaming
 	#list of local subscribers attached to a different PLMN but accessing Internet through their home "GGSN"
-	self.active_roaming_subscribers = {}
+	self.active_roaming_subscribers = []
 
  
     #returns True if MS exists in local HLR
@@ -551,22 +639,20 @@ class HLR():
 
     #creates MM contexts, returns P-TMSI if successful
     def create_mm_ctx(self, imsi):
-	#check if an inactive MM ctx exists, if yes, make it active and generate new P-TMSI
 	
 	#delete any existing PDP contexts for this MS
-	#XXX verify
 	#XXX remove forwarder rules
 	for ctx in ACTIVE_CONTEXTS:
 	    if ctx.imsi == imsi:
 		ACTIVE_CONTEXTS.remove(ctx)
 
+	#check if an inactive MM ctx exists, if yes, make it active and generate new P-TMSI
 	if self.inactive_subscribers.has_key(imsi):
 	    self.inactive_subscribers.pop(imsi, None)
 	    self.active_subscribers[imsi] = self.generate_ptmsi()
 	    return self.active_subscribers[imsi]
 	
 	#check if an active MM ctx exists and if yes, update P-TMSI
-	#XXX VERIFY IF THIS IS CORRECT 
 	elif self.active_subscribers.has_key(imsi):
 	    self.active_subscribers[imsi] = self.generate_ptmsi()
 	    return self.active_subscribers[imsi]
@@ -597,13 +683,14 @@ class HLR():
 	    	return True
 	return False
 
-#XXX: add roaming capabilities 	
-#XXX: todo fill with data from a file
 ##HLR initialization
 hlr = HLR()
 hlr.subscribers['231014450469959'] = Subscriber('231014450469959', None, 'Tibor', None, None)
 hlr.subscribers['231014453285311'] = Subscriber('231014453285311', None, 'Iva', None, None) 
-hlr.subscribers['1234567'] = Subscriber('1234567', None, 'tester', None, None)
+hlr.subscribers['231011234567890'] = Subscriber('231011234567890', None, 'tester', None, None)
+#hlr.subscribers['901704450469959'] = Subscriber('901704450469959', None, 'Tibor', None, None)
+#hlr.subscribers['901704453285311'] = Subscriber('901704453285311', None, 'Iva', None, None) 
+#hlr.subscribers['901701234567890'] = Subscriber('901701234567890', None, 'tester', None, None)
 
 class GPRSControll(app_manager.RyuApp):
     """
@@ -631,7 +718,6 @@ class GPRSControll(app_manager.RyuApp):
         ##RestCall reffers to class that holds methods/functions (WTF python calls them),
         ##that can be called via REST interface
         wsgi.registory['RestCall'] = self.data
-       
         ##path holds string that is used to adress REST calls
         ##e.g.: localhost:8080/gprs/info/whatever
         path = '/gprs'
@@ -665,7 +751,7 @@ class GPRSControll(app_manager.RyuApp):
 
 	uri = path + '/roam_sm/{cmd}'
 	mapper.connect('stats',uri,
-		       controller=RestCall, action='mod_roam_sm',
+		       cpontroller=RestCall, action='mod_roam_sm',
                        conditions=dict(method=['GET']))	
 
         #Testing
@@ -684,7 +770,9 @@ class GPRSControll(app_manager.RyuApp):
                     LOG.debug('Resolved APN '+apn.name+' : '+apn.ip_addr)
                 except socket.gaierror:
                     LOG.warning('Error while resolving apn name "'+apn.name+'"' )
-
+	
+	#XXX: do the same for roaming partners
+	#define them statically but finds IPs through DNS
    
     def on_edge_inet_dp_join(self, dp, port):
         """ Add special rules for forwader on edge (APN-side) of network
@@ -743,7 +831,7 @@ class GPRSControll(app_manager.RyuApp):
         ##Controller uses ARP to resolve mac_addresses of APNs
         ##All arp replies with target IP of DISCOVERY_ARP_IP are redirected to controller
         LOG.debug('TOPO MNGR: Installing ARP APN discovery flows on forwarder: ' + str(dp.id))
-        match= parser.OFPMatch(eth_type=0x0806, arp_op=2, arp_tpa=DISCOVERY_ARP_IP)
+        match = parser.OFPMatch(eth_type=0x0806, arp_op=2, arp_tpa=DISCOVERY_ARP_IP)
         actions = [ parser.OFPActionOutput(ofp.OFPP_CONTROLLER)]
         self.add_flow(dp, 100, match, actions)
 
@@ -752,6 +840,12 @@ class GPRSControll(app_manager.RyuApp):
         ##Following rules are applied only on forwarders bellonging to BSS_EDGE_FORWARDER group
         ##Rules are applied based on priority of match (highest priority first)
         if dp.id in BSS_EDGE_FORWARDER:
+            LOG.debug('TOPO MNGR: Redirecting all ARP req from BSS simulator to controller by OFrule on forwarder: ' + str(dp.id))
+            match = parser.OFPMatch(in_port=BSS_PHY_PORT, eth_type=0x0806, arp_op=1)
+            actions = [ parser.OFPActionOutput(ofp.OFPP_CONTROLLER) ]
+            inst = [ parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions) ]
+            req = parser.OFPFlowMod(datapath=dp, priority=10, match=match, instructions=inst)
+            dp.send_msg(req)
             
             LOG.debug('TOPO MNGR: Forwarder: ' + str(dp.id) + ' is an access edge forwarder, installing aditional rules')
             ## UDP 23000 is GPRS-NS and all packets that match this are forwarded to OF_GPRS_TABLE flow table
@@ -779,7 +873,7 @@ class GPRSControll(app_manager.RyuApp):
             ##TODO: BSS <-> vGSN separate tunnel for communication!
             ##TODO: deletion, modification od  PDP CNT
 
-            ## if packet is not first segment  of user data packet (IS part of sndcp fragmented packet) it's DROPED
+            ## if packet is not first segment  of user data packet (IS part of sndcp fragmented packet) it's DROPPED
             match = parser.OFPMatch( sndcp_first_segment=0 )
             actions = [ ] 
             inst = [ parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions) ]
@@ -794,7 +888,7 @@ class GPRSControll(app_manager.RyuApp):
             req = parser.OFPFlowMod(datapath=dp, table_id=OF_GPRS_TABLE, priority=200, match=match, instructions=inst)
             dp.send_msg(req)
     
-            ##if it's SNDCP packet taht still wasnt matched (rules with higher priority are inserted on PDP CNT activation)
+            ##if it's SNDCP packet that still wasnt matched (rules with higher priority are inserted on PDP CNT activation)
             ##we assume it's packet of unknown PDP CNT and we DROP it
             match = parser.OFPMatch( sndcp_first_segment=1 )
             actions = [ ]
@@ -814,6 +908,7 @@ class GPRSControll(app_manager.RyuApp):
             match = parser.OFPMatch(in_port=VGSN_PHY_PORT)
             req = parser.OFPFlowMod(datapath=dp, table_id=OF_GPRS_TABLE, priority=0, match=match, instructions=inst)
             dp.send_msg(req)
+
 
     def stats_reply_handler(self, ev):
         """
@@ -849,7 +944,7 @@ class GPRSControll(app_manager.RyuApp):
         parser = dp.ofproto_parser
         match = ev.msg.match
 
-        ##SNDCP packet with multiple fragments recieved - print warning, send ICMP fragmentation needed
+        ##SNDCP packet with multiple fragments received - print warning, send ICMP fragmentation needed
         ##TODO: Not WOrking correctly
         if (match['eth_type'] == 0x0800 and match['ip_proto'] == inet.IPPROTO_UDP 
             and match['udp_dst'] == VGSN_PORT and match['sndcp_first_segment'] == 1 
@@ -858,7 +953,7 @@ class GPRSControll(app_manager.RyuApp):
             LOG.warning('WARNING: Device with IP: '+match['ipv4_src']+' sent fragmented sndcp packet')
             return
 
-        ##ARP request recieved - send 'I'm here' response
+        ##ARP request received - send 'I'm here' response
         if match['eth_type'] == 0x0806 and match['arp_op'] == 1:
             LOG.debug("PKT HND: ARP REQ HND: ARP request recieved")
             if match['arp_spa'] == match['arp_tpa'] and match['eth_dst'] == 'ff:ff:ff:ff:ff:ff':
@@ -869,14 +964,20 @@ class GPRSControll(app_manager.RyuApp):
                     LOG.debug('PKT HND: ARP REQ HND: This is self assigned IP limited to LAN, not going to respond')
                 else:
                     LOG.debug('PKT HND: ARP REQ HND: ARP request is a valid one, responding')
-                    _arp_send(dp=dp, port_out=match['in_port'], arp_code=2, eth_dst=match['eth_src'], eth_target=match['arp_sha'],
+		    if match['arp_tpa'] == VGSN_IP:
+			_arp_send(dp=dp, port_out=match['in_port'], arp_code=2, eth_dst=match['eth_src'], eth_target=VGSN_MAC,
+                      ip_target=match['arp_spa'], ip_sender=match['arp_tpa'])
+                	LOG.debug('PKT HND: ARP REQ HND: Reply to '+match['arp_spa'] +': Host '+match['arp_tpa']+' has this MAC '+VGSN_MAC )
+                    
+		    else:
+			_arp_send(dp=dp, port_out=match['in_port'], arp_code=2, eth_dst=match['eth_src'], eth_target=match['arp_sha'],
                       ip_target=match['arp_spa'], ip_sender=match['arp_tpa'])
                 LOG.debug('PKT HND: ARP REQ HND: Reply to '+match['arp_spa'] +': Host '+match['arp_tpa']+' is at forwarder '+str(dp.id) )
             return
 
         ##ARP response with target_ip==DISCOVERY_ARP_IP recieved - we found APN
         if match['eth_type'] == 0x0806 and match['arp_op'] == 2 and match['arp_tpa'] == DISCOVERY_ARP_IP:
-            LOG.debug('TOPO MNGR: ARP response with target APN discovery IP recieved at controller, processing for APN extraction')
+            LOG.debug('TOPO MNGR: ARP response with target APN discovery IP received at controller, processing for APN extraction')
             pkt = packet.Packet(array.array('B', ev.msg.data))
             arp_pkt=pkt.get_protocol(arp.arp)
             apn_ip = arp_pkt.src_ip
@@ -886,7 +987,7 @@ class GPRSControll(app_manager.RyuApp):
             ##Search for apn in APN_POOL to add mac addr. and update topology
             for apn in APN_POOL:
                 if apn.ip_addr == apn_ip:
-                    apn.eth_addr = apn_mac
+		    apn.eth_addr = apn_mac
                     topo.add_link(dp.id,str(apn.name),port)
                     topo.add_link(str(apn.name),dp.id,0)
                     topo.reload_topology()
@@ -897,10 +998,13 @@ class GPRSControll(app_manager.RyuApp):
                     ##Create MAC-tunnels between APN and all BSSs
                     for bss in BSS_POOL:
                         self.add_tunnel(bss,apn)
-                    break
-            return
+			for roaming_forwarder in ROAMING_APN_POOL:
+			    self.add_tunnel(bss, roaming_forwarder)
+			    self.add_tunnel(roaming_forwarder, apn)
+		    break	 
+	    return
 
-        ##ICMP echo with dst_ip==DISCOVERY_IP_DST recieved - new link between forwarders is up
+        ##ICMP echo with dst_ip==DISCOVERY_IP_DST received - new link between forwarders is up
         if match['eth_type'] == 0x0800 and match['ipv4_dst'] == DISCOVERY_IP_DST and match['ip_proto'] == 1:
             LOG.debug('TOPO MNGR: ICMP echo recieved at controller, processing for link extraction')
             pkt = packet.Packet(array.array('B', ev.msg.data))
@@ -948,7 +1052,7 @@ class GPRSControll(app_manager.RyuApp):
                             _arp_send(dp=dp, port_out=port, arp_code=1, ip_target=apn.ip_addr, ip_sender=DISCOVERY_ARP_IP)
 
         if ev.enter is False:
-	    ##TODO: We need to scan if any tunnels were affected, and if so, if any PDP COntexts were affected
+	    ##TODO: We need to scan if any tunnels were affected, and if so, if any PDP Contexts were affected
             ##JUST REMOVING NODE FROM TOPOLOGY ISNT ENOUGH!
             LOG.debug('TOPO MNGR: Forwarder: ' + str(dp.id) + ' is leaving topology. It was a pleasure for us!')
             topo.del_forwarder(dp.id)
@@ -961,8 +1065,8 @@ class GPRSControll(app_manager.RyuApp):
         ##Search inactive tunels to see if any path can be resolved now, if yes...do the same thing as add_tunnel()
         for inact_tunnel in INACTIVE_TUNNELS:
             try:
-                self.path_out = topo.get_tunnel(inact_tunnel.bss, inact_tunnel.apn.name)
-                self.path_in  = topo.get_tunnel(inact_tunnel.apn.name, inact_tunnel.bss)
+                self.path_out = topo.get_tunnel(inact_tunnel.bss.name, inact_tunnel.apn.name)
+                self.path_in  = topo.get_tunnel(inact_tunnel.apn.name, inact_tunnel.bss.name)
                 
             except nx.NetworkXNoPath:
                 LOG.warning("Warning: Couldn't find path, network might not be converged yet. Retrying when next forwarder joins network...again...")
@@ -1018,14 +1122,14 @@ class GPRSControll(app_manager.RyuApp):
             dp.send_msg(req)
 
             ACTIVE_TUNNELS.append(tunnel(inact_tunnel.bss, inact_tunnel.apn, self.tid_out, self.tid_in, self.path_out, self.path_in))
-            LOG.debug('TOPO MNGR: Inactive tunnel between ' + str(inact_tunnel.bss) + ' and ' + str(inact_tunnel.apn.name) +' put into active state!')
+            LOG.debug('TOPO MNGR: Inactive tunnel between ' + str(inact_tunnel.bss.name) + ' and ' + str(inact_tunnel.apn.name) +' put into active state!')
 
     def add_tunnel(self, _bss_, _apn_):
         """
         This method is called when new APN is discovered to connect it with all BSS stations via MAC Tunnels
 
         Keyword arguments:
-            _bss_ -- usualy string representing BSS node in topology
+            _bss_ -- object of bss class representing BSS node in topology
             _apn_ -- object of apn class representing APN in topology
             
         """
@@ -1038,8 +1142,8 @@ class GPRSControll(app_manager.RyuApp):
         ##If no path is found, tunnel is added to INACTIVE_TUNNELS and is attempted to recreate next time
         ##when new link between forwarders is up
         try:
-            self.path_out = topo.get_tunnel(self.bss, self.apn.name)
-            self.path_in  = topo.get_tunnel(self.apn.name, self.bss)
+            self.path_out = topo.get_tunnel(self.bss.name, self.apn.name)
+            self.path_in  = topo.get_tunnel(self.apn.name, self.bss.name)
         except nx.NetworkXNoPath:
             LOG.warning("Warning: Couldn't find path, network might not be converged yet. Retrying when next forwarder joins network.")
             INACTIVE_TUNNELS.append(tunnel(self.bss,self.apn, self.tid_out, self.tid_in))
@@ -1061,7 +1165,7 @@ class GPRSControll(app_manager.RyuApp):
             actions = [parser.OFPActionOutput(node.port_out)]
             self.add_flow(dp, 300, match, actions, 0)
 
-        ##Last forwarder on the way OUT needs to set eth_dst to eth_addr of APN otherwise it wont be processed
+        ##Last forwarder on the way OUT needs to set eth_dst to eth_addr of APN otherwise it won't be processed
         dp = dpset.get(self.path_out[-1].dpid)
         parser = dp.ofproto_parser
         match = parser.OFPMatch(eth_dst=self.tid_out)
@@ -1093,7 +1197,7 @@ class GPRSControll(app_manager.RyuApp):
         dp.send_msg(req)
 
         ACTIVE_TUNNELS.append(tunnel(self.bss,self.apn, self.tid_out, self.tid_in, self.path_out, self.path_in))
-        LOG.debug('Tunnel between '+str(self.bss)+' and '+str(self.apn.name) + ' was set up.')
+        LOG.debug('Tunnel between '+str(self.bss.name)+' and '+str(self.apn.name) + ' was set up.')
        
     def add_flow(self, dp, priority, match, actions, table=0):
         ofp = dp.ofproto
@@ -1123,19 +1227,19 @@ class RestCall(ControllerBase):
 
         response +=      '</BR><B>Active tunnels:   </B>'        
         for tunnel in ACTIVE_TUNNELS:
-            response += '</BR>***Tunnel from: ' + tunnel.bss + ' to: ' + tunnel.apn.name + '***</BR>'
+            response += '</BR>***Tunnel from: ' + tunnel.bss.name + ' to: ' + tunnel.apn.name + '***</BR>'
             for node in tunnel.path_out:
                 response += str(node.dpid) + ' via port: ' + str(node.port_out) +', ' 
-            response += '</BR>***Tunnel from: ' + tunnel.apn.name + ' to: ' + tunnel.bss + '***</BR>'
+            response += '</BR>***Tunnel from: ' + tunnel.apn.name + ' to: ' + tunnel.bss.name + '***</BR>'
             for node in tunnel.path_in:
                 response += str(node.dpid) + ' via port: ' + str(node.port_out) +', '
 
         response +=      '</BR><B>Inactive tunnels: </B>'
         for tunnel in INACTIVE_TUNNELS:
-            response += '</BR>***Tunnel from: ' + tunnel.bss + ' to: ' + tunnel.apn.name + '***</BR>'
+            response += '</BR>***Tunnel from: ' + tunnel.bss.name + ' to: ' + tunnel.apn.name + '***</BR>'
             for node in tunnel.path_out:
                 response += str(node.dpid) + ' via port: ' + str(node.port_out) +', '
-            response += '</BR>***Tunnel from: ' + tunnel.apn.name + ' to: ' + tunnel.bss + '***</BR>'
+            response += '</BR>***Tunnel from: ' + tunnel.apn.name + ' to: ' + tunnel.bss.name + '***</BR>'
             for node in tunnel.path_in:
                 response += str(node.dpid) + ' via port: ' + str(node.port_out) +',' 
 
@@ -1181,7 +1285,6 @@ class RestCall(ControllerBase):
 	
     def mod_gmm (self, req, cmd):
 	LOG.debug('REST: mod_gmm: Modification of GMM called')	
-	
 	#parse GET parameters out of REST call
 	body = urlparse.parse_qs(cmd)
 	action = str(body.get('cmd'))[3:-2]
@@ -1209,12 +1312,12 @@ class RestCall(ControllerBase):
                     #ask another controller
                     if roaming_partner_exists(imsi):
 		        LOG.debug("REST: mod_gmm: Roaming partner found for IMSI: " + imsi) 
-			roaming_approved = get_roaming_data('imsi', imsi)
+			url = ROAMING_PARTNERS[imsi[:5]]
+			roaming_approved = get_roaming_data('imsi', imsi, 'att', url)
 		    else:
 		        LOG.debug("REST: mod_gmm: Roaming partner does not exist for IMSI: " + imsi) 
 			#return Response(status=500, content_type='text', body='"No remote HLR found for IMSI: '+imsi+'"')	
 			return Response(status=200, content_type='application/json', body='{"cmd":"atti","result":"fail","imsi":"'+imsi+'"}')			
-			#XXX
 		    if roaming_approved:
 			ptmsi = hlr.create_mm_ctx(roaming_approved)
                     	LOG.debug('REST: mod_gmm: Roaming attach permitted for IMSI: ' + imsi)
@@ -1248,14 +1351,17 @@ class RestCall(ControllerBase):
 			else:
 			    if roaming_partner_exists(imsi):
                         	LOG.debug("REST: mod_gmm: Roaming partner found for IMSI: " + imsi)
-                        	roaming_approved = get_roaming_data('imsi', imsi)
-		    	    else:
+				url = ROAMING_PARTNERS[imsi[:5]]
+                        	roaming_approved = get_roaming_data('imsi', imsi, 'att', url)
+		    	        if roaming_approved:
+				    ptmsi = hlr.create_mm_ctx(roaming_approved)
+				    LOG.debug('REST: mod_gmm: Roaming attach permitted for IMSI: ' + roaming_approved)
+				    return Response(status=200, content_type='application/json', body='{"cmd":"attp","result":"success","imsi":"'+imsi+'","p-tmsi":"'+ptmsi+'"}')
+		    	        else:
+				    return Response(status=200, content_type='application/json', body='{"cmd":"attp","result":"fail","p-tmsi":"'+p_tmsi+'"}')
+			    else:
 				LOG.debug("REST: mod_gmm: Roaming partner does not exist for IMSI: " + imsi)
 				return Response(status=200, content_type='application/json', body='{"cmd":"attp","result":"fail","p-tmsi":"'+p_tmsi+'"}')
-		    	    if roaming_approved:
-				ptmsi = hlr.create_mm_ctx(roaming_approved)
-				OG.debug('REST: mod_gmm: Roaming attach permitted for IMSI: ' + roaming_approved)
-				return Response(status=200, content_type='application/json', body='{"cmd":"attp","result":"success","imsi":"'+imsi+'","p-tmsi":"'+ptmsi+'"}')
 		    #P-TMSI unknown in local HLR, respond with error
 		    else:
 			return Response(status=200, content_type='application/json', body='{"cmd":"attp","result":"fail","p-tmsi":"'+p_tmsi+'"}')
@@ -1263,16 +1369,43 @@ class RestCall(ControllerBase):
 		    #the old RAI is foreign, try to get IMSI from the foreign controller
 		    if roaming_partner_exists(net_id):
                         LOG.debug("REST: mod_gmm: Roaming partner found for RAI: " + old_rai)
-                        imsi = get_roaming_data('p-tmsi', p_tmsi)
+			url = ROAMING_PARTNERS[net_id]
+                        imsi = get_roaming_data('p-tmsi', p_tmsi, 'att', url)
 		    else:
                         LOG.debug("REST: mod_gmm: Roaming partner does not exist for P-TMSI: " + p_tmsi)
                        	return Response(status=200, content_type='application/json', body='{"cmd":"attp","result":"fail","p-tmsi":"'+p_tmsi+'"}')
 		    #if the subscriber is known in remote controller 
 		    if imsi:
-			#XXX do we need to check if IMSI is local?
-                        LOG.debug('REST: mod_gmm: IMSI found for P-TMSI: ' + p-tmsi)
-                        ptmsi = hlr.create_mm_ctx(imsi) 
-			return Response(status=200, content_type='application/json', body='{"cmd":"attp","result":"success","imsi":"'+imsi+'","p-tmsi":"'+ptmsi+'"}') 
+			#check if IMSI is local
+                        LOG.debug('REST: mod_gmm: IMSI found for P-TMSI: ' + p_tmsi)
+            		if imsi[:5] == MCC_MNC:
+		    	    #if subscriber is from our network, let's find him in the HLR
+                    	    if hlr.find_ms_by_imsi(imsi):
+                    	        ptmsi = hlr.create_mm_ctx(imsi)
+                    		LOG.debug('REST: mod_gmm: Attach successful with IMSI: ' + imsi)
+				return Response(status=200, content_type='application/json', body='{"cmd":"attp","result":"success", "imsi":"'+imsi+'","p-tmsi":"'+ptmsi+'"}')
+		    	    #unknown IMSI
+                    	    else:
+                    	        LOG.debug('REST: mod_gmm: Attach not successful with IMSI: ' + imsi)
+			        return Response(status=200, content_type='application/json', body='{"cmd":"attp","result":"fail", "p-tmsi":"'+p_tmsi+'"}')
+                        #get roaming permission from HPLMN of the MS
+			elif roaming_partner_exists(imsi):
+                            LOG.debug("REST: mod_gmm: Roaming partner found for IMSI: " + imsi)
+                            #if IMSI is from the same PLMN like P-TMSI, we don't need to ask the same controller again
+			    if imsi[:5] == net_id:
+				return Response(status=200, content_type='application/json', body='{"cmd":"attp","result":"success","imsi":"'+imsi+'","p-tmsi":"'+ptmsi+'"}')
+			    url = ROAMING_PARTNERS[imsi[:5]]
+			    roaming_approved = get_roaming_data('imsi', imsi, 'att', url)
+		    	    if roaming_approved:
+				ptmsi = hlr.create_mm_ctx(roaming_approved)
+				LOG.debug('REST: mod_gmm: Roaming attach permitted for IMSI: ' + roaming_approved)
+				return Response(status=200, content_type='application/json', body='{"cmd":"attp","result":"success","imsi":"'+imsi+'","p-tmsi":"'+ptmsi+'"}')
+		    	    else:
+				return Response(status=200, content_type='application/json', body='{"cmd":"attp","result":"fail","p-tmsi":"'+p_tmsi+'"}')
+			else:
+			    LOG.debug("REST: mod_gmm: Roaming partner does not exist for IMSI: " + imsi)
+			    return Response(status=200, content_type='application/json', body='{"cmd":"attp","result":"fail","p-tmsi":"'+p_tmsi+'"}')
+		    #IMSI unknown
                     else:
 			LOG.debug('REST: mod_gmm: Roaming attach not permitted / IMSI not existing')
 			return Response(status=200, content_type='application/json', body='{"cmd":"attp","result":"fail","p-tmsi":"'+p_tmsi+'"}')
@@ -1289,12 +1422,12 @@ class RestCall(ControllerBase):
 		return Response(status=200, content_type='text', body='"Detach successful for P-TMSI: '+ p_tmsi +'"')
 	    #XXX: tear down active tunnels if any
 	    #XXX: notify home controller if the MS is foreign
-	    return Response(status=500, content_type='text', body='"Feature not implemented yet"')
+	    return Response(status=500, content_type='text', body='"Subscriber unknown."')
 	
 	#if MS wants to perform an inter SGSN RAU
 	elif action == 'rau':
 		#XXX: add support for inter SGSN RAU
-		return Response(status=500, content_type='text', body='"Feature not implemented yet"')
+		return Response(status=500, content_type='text', body='"Feature not implemented yet."')
 	
 	#unknown action
 	else:
@@ -1302,7 +1435,7 @@ class RestCall(ControllerBase):
     
     def mod_roam_mm (self, req, cmd):
 	
-	LOG.debug('REST: mod_gmm: Modification of roaming GMM called')
+	LOG.debug('REST: mod_roam_mm: Modification of roaming GMM called')
         #parse GET parameters out of REST call
         body = urlparse.parse_qs(cmd)
         action = str(body.get('cmd'))[3:-2]
@@ -1313,39 +1446,122 @@ class RestCall(ControllerBase):
 	        imsi = str(body.get('imsi'))[3:-2]
 		#validate if IMSI is local
 		if imsi[:5] != MCC_MNC:
-	    	    return Response(status=500, content_type='text', body='"IMSI not from this remote network"') 
-	    
+		    return Response(status=200, content_type='application/json', body='{"cmd":"atti","result":"fail", "imsi":"'+imsi+'"}') 
+	   	#find MS in HLR 
 		if hlr.find_ms_by_imsi(imsi):
-	   	#XXX: add me to a list of ACTIVE ROAMING SUBSCRIBERS
-		    return Response(content_type='application/json', body='{"imsi":"'+imsi+'"}')
+	   	#add MS to a list of ACTIVE ROAMING SUBSCRIBERS
+		    hlr.active_roaming_subscribers.append(imsi);
+		    return Response(status=200, content_type='application/json', body='{"cmd":"atti","result":"success", "imsi":"'+imsi+'"}')
 	    	else:
-		    return Response(status=500, content_type='text', body='"IMSI unknown in remote HLR"')
+		    return Response(status=200, content_type='application/json', body='{"cmd":"atti","result":"fail", "imsi":"'+imsi+'"}')
 	    
 	    ##if a subscriber wants to attach in a VPLMN with P-TMSI generated in this PLMN
 	    elif action == 'attp':	
-		#XXX append to list of active roaming subscribers if his imsi is local?
 		ptmsi = str(body.get('p-tmsi'))[3:-2]
 		imsi = hlr.find_mm_ctx_by_ptmsi(ptmsi)
 		if imsi:
-		    return Response(content_type='application/json', body='{"imsi":"'+imsi+'"}')
+		    if imsi == MCC_MNC:
+			hlr.active_roaming_subscribers.append(imsi)
+		    return Response(status=200, content_type='application/json', body='{"cmd":"attp","result":"success", "imsi":"'+imsi+'"}')
 		else:
-		    return Response(status=500, content_type='text', body='"P-TMSI unknown in remote HLR"')
+		    return Response(status=200, content_type='application/json', body='{"cmd":"attp","result":"fail", "p-tmsi":"'+ptmsi+'"}')
 	
 	elif action == 'det':
-	    #XXX:finish me
-	    #XXX remove from ACTIVE ROAMING SUBSCRIBERS and tear the tunnels down
-	    return
+	    #XXX tear the active tunnels down
+	    imsi = str(body.get('imsi'))[3:-2]
+	    if imsi in hlr.active_roaming_subscribers:
+		hlr.ctive_roaming_subscribers.remove(imsi)
+	        return Response(content_type='application/json', body='{"imsi":"'+imsi+'"}')
+	    return Response(status=500, content_type='text', body='"IMSI unknown in remote HLR"')
 	else:
 	    return Response(status=500, content_type='text', body='"Error in URL"')
 	
     def mod_roam_sm (self, req, cmd):
-	#XXX: verify if user is attached in the roaming network - active roaming subscribers
-	#XXX: add support for tunnel creation
+	LOG.debug('REST: mod_roam_sm: Modification of roaming SM called')
+	
+	#XXX verify if suffiecient
+	body = urlparse.parse_qs(cmd)
+        action = str(body.get('cmd'))[3:-2]
+	imsi = str(body.get('imsi'))[3:-2]	
+	apn = str(body.get('apn'))[3:-2]
+
+	#if user is not attached in the roaming network - no Session Management work possible
+	if imsi not in hlr.active_remote_subscribers:
+	    return Response(status=500, content_type='text', body='"IMSI not attached"')		
+
+	#PDP context activation
+	if action == 'add':
+	    
+	    #find path from roaming forwarder to the APN and back
+	    tid_out=None
+            tid_in=None
+            path_in=None
+            path_out=None
+
+            ## We find tunnel that matches criteria from Activate PDP context request
+            for act_tunnel in ACTIVE_TUNNELS:
+                if start == act_tunnel.bss.name and end == act_tunnel.apn.name:
+                    tid_out = act_tunnel.tid_out
+                    tid_in = act_tunnel.tid_in
+                    path_in =  act_tunnel.path_in
+                    path_out = act_tunnel.path_out
+                    LOG.debug('REST: mod_roam_sm: Tunnel was found')
+                    break
+	    
+	    #XXX verify return a HTTP response to the controller if required tunnel doesn't exist
+            if tid_out == None or tid_in == None or path_in == None or path_out == None:
+                LOG.error('REST: mod_roam_sm: ERROR: No suitable tunnel for given PDP was found')
+		return Response(status=500, content_type='text', body='"Tunnel not found"')
+	    
+            ## IP address is picked, in case there is no left, method ends and returns Internal Error HTTP response to caller
+            if len(IP_POOL) == 0:
+                LOG.error('REST: mod_roam_sm: ERROR: We are out of IP addresses') 
+                return Response(status=500, content_type='text',body='"Out of IPs"')
+	    
+            #assign an IP address from the pool
+            client_ip=IP_POOL.pop()
+
+	    #XXX: create some sort of data structure similar to ACTIVE_CONTEXTS.append	    
+	    #XXX ACTIVE ROAMING CONTEXTS or just a dictionary	     
+
+	    #WAY OUT - match all traffic coming from interface connected to roaming partner's network and send it to the APN
+	    #each PDP ctx is assigned a different IP address, so we can identify the ctx by matching it
+            dp = self.dpset.get(path_out[0].dpid)
+            parser = dp.ofproto_parser
+            ofp = dp.ofproto
+            match = parser.OFPMatch(in_port=path_in[-1].port_out,
+            			    eth_type=0x0800,
+                                    ipv4_src=client_ip)	    
+	    actions = [parser.OFPActionSetField(eth_dst=self.apn.eth_addr),  parser.OFPActionOutput(path_out[-1].port_out)]
+	    inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
+	    req = parser.OFPFlowMod(datapath=dp, priority=400, match=match, instructions=inst, table_id = 0)
+	    dp.send_msg(req)
+            
+	    #XXX check  
+	    ##On the way IN we need to match packet on both first and last forwarder - it is the same forwarder in our topology
+            ##for first in_port match aplies same rule as on the way out: in_port=path_out[-1].port_out
+            dp = self.dpset.get(path_in[0].dpid)
+            parser = dp.ofproto_parser
+            ofp = dp.ofproto
+            match = parser.OFPMatch(in_port=path_out[-1].port_out,
+                                    eth_type=0x0800,
+                                    ipv4_dst=client_ip)
+	    actions = [ parser.OFPActionOutput(path_in[-1].port_out)]
+            inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
+            req = parser.OFPFlowMod(datapath=dp, priority=400, match=match, instructions=inst, table_id = 0)
+            dp.send_msg(req)
+	    
+	    return (Response(content_type='application/json', body='{"address":"'+client_ip+'"}'))
+
+	elif action == 'del':
 	#XXX: add support for tunnel teardown
-	return 
+	    return Response(status=500, content_type='text', body='"Feature not implemented yet"')
+
+	else:
+	    return Response(status=500, content_type='text', body='"Error in URL"')
 
     def mod_sm (self, req, cmd):
-        LOG.debug('REST: mod_sm: Modification of PDP called')
+        LOG.debug('REST: mod_sm: Modification of SM called')
         #parsing GET parameters out of REST call
         body = urlparse.parse_qs(cmd)
         action = str(body.get('cmd'))[3:-2]
@@ -1368,30 +1584,49 @@ class RestCall(ControllerBase):
             tid_in=None
             path_in=None
             path_out=None
-            #XXX:How about a HTTP response to vGSN if required tunnel doesnt exist?
+		
+	    client_ip = ''
+	  
+	    #verify if IMSI is local. If no, find a tunnel to roaming forwarder, create rules for this MS and ask remote controller to build tunnels
+	    if imsi[:5] != MCC_MNC:
+		#store the APN		
+		apn = end
+		#find tunnel leading to the HPLMN of the roaming MS
+		for roaming_apn in ROAMING_APN_POOL:
+		    if roaming_apn.name == imsi[:5]:
+			end = roaming_apn.name
+			break
+
+		#if tunnels/rules are not created in remote controller, return IP to the pool and respond with error
+		client_ip = get_roaming_tunnel(action, imsi, apn) 
+		if not client_ip: 
+		    return Response(status=500, content_type='text', body='"Tunnel not found"')    	
+            
             ## We find tunnel that matches criteria from Activate PDP context request
             for act_tunnel in ACTIVE_TUNNELS:
-                if start == act_tunnel.bss and end == act_tunnel.apn.name:
+                LOG.debug('REST: mod_sm: start: '+ act_tunnel.bss.name + ' end: '+act_tunnel.apn.name)
+		if start == act_tunnel.bss.name and end == act_tunnel.apn.name:
                     tid_out = act_tunnel.tid_out
                     tid_in = act_tunnel.tid_in
                     path_in =  act_tunnel.path_in
                     path_out = act_tunnel.path_out
                     LOG.debug('REST: mod_sm: Tunnel was found')
                     break
-
+	    
+	    #XXX verify return a HTTP response to vGSN if required tunnel doesn't exist
             if tid_out == None or tid_in == None or path_in == None or path_out == None:
                 LOG.error('REST: mod_sm: ERROR: No suitable tunnel for given PDP was found')
-                return Response(status=500, content_type='text', body='"Tunnel not found"')
-
-   
-            #XXX:review, maybe larger ip pool, for now it's enough
+		return Response(status=500, content_type='text', body='"Tunnel not found"')
+	
             ## IP address is picked, in case there is no left, method ends and returns Internal Error HTTP response to caller
             if len(IP_POOL) == 0:
                 LOG.error('REST: mod_sm: ERROR: We are out of IP addresses') 
                 return Response(status=500, content_type='text',body='"Out of IPs"')
-        
-            client_ip=IP_POOL.pop()
-     
+	    
+            #if there is no IP address assigned, assign one
+	    if len(client_ip) == 0:	    
+            	client_ip=IP_POOL.pop()
+	    
             ACTIVE_CONTEXTS.append( PDPContext(bvci, tlli, sapi, nsapi, tid_out, tid_in, client_ip, imsi, drx_param) )
         
             ###WAY OUT
@@ -1430,17 +1665,20 @@ class RestCall(ControllerBase):
             req = parser.OFPFlowMod(datapath=dp, priority=300, match=match, instructions=inst, table_id = 0)
             dp.send_msg(req)
      
+	    #last forwarder of the path
             dp = self.dpset.get(path_in[-1].dpid)
             parser = dp.ofproto_parser
             ofp = dp.ofproto
         
-            ##XXX:Setfield eth_dst is hardcoded to work with our BTS!
+            ##XXX:Setfield eth_dst is set to the MAC address of the BSS simulator (bss1/bss2 interface)
+	    ##to work with our BTS, eth_dst has to be set to our BTS's MAC address - eth_dst='00:d0:cc:08:02:ba'
             ##Last forwarder machtes Clients IP to push appropriate GPRS headers and determine port_out
             match = parser.OFPMatch(eth_type=0x0800,
                                     ipv4_dst=client_ip)
             actions=[ GPRSActionPushGPRSNS(bvci, tlli, sapi, nsapi, drx_param, imsi),
                       GPRSActionPushUDPIP(sa=VGSN_IP, da=BSS_IP, sp=VGSN_PORT, dp=BSS_PORT),
-                      parser.OFPActionSetField(eth_dst='00:d0:cc:08:02:ba'),
+                      parser.OFPActionSetField(eth_dst=BSS_MAC),
+		     # parser.OFPActionSetField(eth_src=VGSN_MAC),
                       parser.OFPActionOutput(path_in[-1].port_out)]
             inst=[ parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions) ]
  
@@ -1453,8 +1691,13 @@ class RestCall(ControllerBase):
 	elif action == 'del':
             #TODO:in case on CNT deactivation, return IP to pool
 	    #TODO: remove rules from forwarders
+	    #XXX notify roaming partner's controller
 	    return
 
+	#unknown action, respond with error
+	else:
+	    return (Response(status=500, content_type='text', body='"IMSI unknown in local HLR"'))
+	
     def add_flow(self, dp, priority, match, actions, table = 0):
         ofp = dp.ofproto
         parser = dp.ofproto_parser
