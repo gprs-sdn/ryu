@@ -1,4 +1,4 @@
-esom ryu.base import app_manager
+from ryu.base import app_manager
 from ryu.ofproto import ofproto_v1_3_parser
 from ryu.controller import ofp_event
 from ryu.controller import dpset
